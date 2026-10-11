@@ -1,0 +1,22 @@
+{
+	"compilerOptions": {
+		"module": "CommonJS", // <-- Ubah dari Node16 ke CommonJS (Sesuai VS Code Extension Host)
+		"moduleResolution": "bundler", // <-- Ubah ke bundler (Cocok dengan Webpack)
+		"target": "ES2022",
+		"lib": [
+			"ES2022"
+		],
+		"skipLibCheck": true, // <-- Mengabaikan konflik tipe di node_modules
+		"outDir": "out",
+		"rootDir": "src",
+		"sourceMap": true,
+		"strict": true,
+		"types": [
+			"node",
+			"mocha"
+		]
+	},
+	"exclude": [
+		"src/webview"
+	]
+}
