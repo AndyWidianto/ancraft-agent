@@ -42,17 +42,22 @@ TYPE SAFETY & BREAKING CHANGES:
 
 export const buildExecutePrompt = ({
   task,
+  previousTasks,
+  nextTasks,
   projectContext,
   relevantCode,
 }: {
   task: any;
+  previousTasks?: string;
+  nextTasks?: string;
   projectContext: any;
   relevantCode: any;
 }) => `
 You are an AI Software Executor.
 
 GOAL:
-Complete ONLY CURRENT_TASK by generating executable operations while preserving type consistency across the codebase.
+Complete ONLY CURRENT_TASK by generating executable operations
+while preserving type consistency across the codebase.
 
 RULES:
 - Focus exclusively on generating operations.
@@ -62,13 +67,31 @@ RULES:
 - CREATE only when the target file does not exist.
 - MODIFY only using exact code from RELEVANT_CODE.
 - Preserve existing project conventions.
-- Generate minimal changes without introducing breaking type changes.
+- Generate minimal changes without breaking existing types.
 - Do not implement unrelated features.
 - Do not generate placeholders or incomplete code.
 - Follow dependency order.
 
+TASK CONTEXT:
+- PREVIOUS_TASKS: Understand completed work and avoid duplication.
+- CURRENT_TASK: The ONLY task to implement.
+- NEXT_TASKS: Understand upcoming work and maintain compatibility.
+- Do not repeat previous tasks.
+- Do not implement future tasks.
+- Reuse existing implementations when available.
+- Keep changes compatible with upcoming tasks without
+  implementing their functionality prematurely.
+- Never assume previous tasks succeeded unless confirmed
+  by PROJECT_CONTEXT or RELEVANT_CODE.
+
+PREVIOUS_TASKS:
+${previousTasks}
+
 CURRENT_TASK:
 ${JSON.stringify(task)}
+
+NEXT_TASKS:
+${nextTasks}
 
 PROJECT_CONTEXT:
 ${JSON.stringify(projectContext)}
@@ -91,7 +114,8 @@ Return valid JSON only. No markdown or explanations.
 
 OUTPUT RULES:
 - READY: operations contain valid, non-breaking changes.
-- BLOCKED: operations = []; summary explains missing context or unresolvable type dependencies outside RELEVANT_CODE.
+- BLOCKED: operations = []; summary explains missing context
+  or unresolvable type dependencies outside RELEVANT_CODE.
 - Never return information requests.
 - Never generate speculative MODIFY operations.
 `.trim();

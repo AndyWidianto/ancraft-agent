@@ -1,3 +1,5 @@
+import type { StatusTask } from ".";
+
 export type ExecutorStatus =
   | "NEED_CONTEXT"
   | "READY";
@@ -69,46 +71,54 @@ export type ExecuteTaskResult =
 
 
 export interface OperationCreate {
-    type: "CREATE"
-    path: string
-    content: string
+  id: number
+  status?: StatusTask
+  type: "CREATE"
+  path: string
+  content: string
 }
 
 export interface OperationModify {
-    type: "MODIFY",
-    path: string
-    changes: [
-        {
-            search: string
-            replace: string
-        }
-    ]
+  id: number
+  status?: StatusTask
+  type: "MODIFY",
+  path: string
+  changes: [
+    {
+      search: string
+      replace: string
+    }
+  ]
 }
 
 export interface OperationDelete {
-    type: "DELETE",
-    path: string
+  id: number
+  status?: StatusTask
+  type: "DELETE",
+  path: string
 }
 
 export interface OperationCommand {
-    type: "COMMAND",
-    command: string
-    cwd: string
+  id: number
+  status?: StatusTask
+  type: "COMMAND",
+  command: string
+  cwd: string
 }
 
 export type Operation = OperationCommand | OperationCreate | OperationDelete | OperationModify;
 
 export interface NeedContext {
-    status: "NEED_CONTEXT",
-    reason: string
-    queries: string[]
+  status: "NEED_CONTEXT",
+  reason: string
+  queries: string[]
 }
 
 
 export interface ReadyOperation {
-    status: "READY",
-    summary: string;
-    operations: Operation[];
+  status: "READY",
+  summary: string;
+  operations: Operation[];
 }
 
 export type ResponseExecutor = NeedContext | ReadyOperation;
@@ -116,15 +126,15 @@ export type ResponseExecutor = NeedContext | ReadyOperation;
 
 
 export interface CommandResult {
-    success: boolean;
-    stdout: string;
-    stderr: string;
-    message: string;
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  message: string;
 }
 
 export interface FileOperationResult {
-    success: boolean;
-    message: string;
+  success: boolean;
+  message: string;
 }
 
 export interface OperationError {

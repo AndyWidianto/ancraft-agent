@@ -1,4 +1,4 @@
-import { OutputPlan, OutputSubPlanning, Operation, OperationResult, AgentAI, SearchRelevantCode } from "./types";
+import { OutputPlan, OutputSubPlanning, Operation, OperationResult, AgentAI, SearchRelevantCode, StatusTask } from "./types";
 import { WorkspaceFileManager } from "./file_manager/workspace";
 import { buildPromtingPlanning } from "./prompt/planning";
 import { buildPromptAnalysis } from "./prompt/analisis";
@@ -143,9 +143,23 @@ export class Execute {
         return parseOutput;
     }
 
-    async getSubPlanning(agent: AgentAI, model: string, projectContext: string, goal: string, currentStep: string, history: OperationResult[], signal?: AbortSignal) {
-        const historyStr = this.projectContext.buildExecutionHistoryContext(history)
-        const promptSubPlanning = buildPromptSubPlanning(projectContext, goal, currentStep, historyStr);
+    async getSubPlanning(
+        agent: AgentAI,
+        model: string,
+        projectContext: string,
+        goal: string,
+        currentStep: string,
+        previousSteps?: string[],
+        nextSteps?: string[],
+        signal?: AbortSignal
+    ) {
+        const promptSubPlanning = buildPromptSubPlanning(
+            projectContext,
+            goal,
+            currentStep,
+            (previousSteps ?? []).join('\n'),
+            nextSteps?.join('\n')
+        );
         const responseAgent = await agent.sendMessage(promptSubPlanning, model, 3, signal);
         const parseResponseAgent = this.extractAndParseJSON(responseAgent.text);
 
@@ -220,11 +234,13 @@ export class Execute {
         return parseResponseAgent as SearchRelevantCode;
     }
 
-    async Execute(agent: AgentAI, model: string, task: string, projectContext: string, relevantCode: string[], signal?: AbortSignal) {
+    async Execute(agent: AgentAI, model: string, task: string, projectContext: string, relevantCode: string[], previousTasks?: string, nextTasks?: string, signal?: AbortSignal) {
         const prompt = buildExecutePrompt({
             task,
             projectContext,
-            relevantCode
+            relevantCode,
+            previousTasks,
+            nextTasks
         })
         const response = await agent.sendMessage(prompt, model, 3, signal);
         const parseResponseAgent = this.extractAndParseJSON(response.text);

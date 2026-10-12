@@ -1,7 +1,20 @@
 import { useState, useEffect, useRef } from 'react';
-import type { ActionType, Agent, BackgroundMessage, ChatMessage, ExecuteStepData, OperationResult, PlanningMessageData, QuestionnaireData, StatusTask, TechStackData, TypeProvider } from './types';
+import type {
+  ActionType,
+  Agent,
+  BackgroundMessage,
+  ChatMessage,
+  ExecuteStepData,
+  Operation,
+  OperationResult,
+  PlanningMessageData,
+  QuestionnaireData,
+  TechStackData,
+  TypeProvider
+} from './types';
 //import { mockMessages } from './data/mockup';
 import AgentInput from './components/AgentInput';
+import { Loader2 } from 'lucide-react';
 
 export interface RefreshActionItem {
   action: string;
@@ -19,10 +32,11 @@ export default function App() {
     planning: "",
     executor: "",
     indexing: ""
-  })
+  });
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [loadingOperation, setLoadingOperation] = useState(false);
+  const [inputValue, setInputValue] = useState('');
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [isRefresh, setIsRefresh] = useState(false);
-  const [newUpdateAt, setNewUpdateAt] = useState<null | Date>(null);
   const [autoApply, setAutoApply] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -52,6 +66,8 @@ export default function App() {
         command: 'ABORT_REQUEST',
       });
     }
+    setInputValue(cacheValue);
+    setIsLoading(false);
   };
 
   const getModelConfig = (modelCodeName: string) => {
@@ -66,11 +82,42 @@ export default function App() {
     };
   };
 
+
+  const getModelsConfig = (modelCodeName: string) => {
+    const matchedAgent = agents.find((agent) =>
+      agent.models.some((m) => m.code_name === modelCodeName)
+    );
+
+    return matchedAgent;
+  };
+
   const changeModel = (type: "plan" | "executor" | "indexing", value: string) => {
     setModel(prev => ({
       ...prev,
       ...(type === "plan" ? { planning: value } : type === "executor" ? { executor: value } : { indexing: value })
-    }))
+    }));
+
+    const models = getModelsConfig(value);
+    if (models) {
+      vscode?.postMessage({
+        command: "SELECTED_MODEL",
+        models: {
+          ...models,
+          models: models.models.map(model => {
+            // Jika code_name tidak cocok, kembalikan model apa adanya
+            if (model.code_name !== value) return model;
+
+            // Jika cocok, ubah status sesuai dengan tipenya
+            return {
+              ...model,
+              selectedPlanning: type === "plan" ? true : model.selectedPlanning,
+              selectedIndexing: type === "indexing" ? true : model.selectedIndexing,
+              selectedExecutor: type === "executor" ? true : model.selectedExecutor,
+            };
+          }),
+        }
+      })
+    }
   }
 
   function formatPlanning(planning?: PlanningMessageData): string {
@@ -157,8 +204,15 @@ export default function App() {
   }
 
   const updateStatusOperation = (data: any) => {
-    const { planningId, stepId, taskId, operationId, status } = data;
+    const { planningId, stepId, taskId, status, operationId } = data;
 
+    console.log("Operation status update: ", data);
+
+    if (status === "DONE") {
+      setLoadingOperation(false);
+    }
+
+    // Update state `setMessages` untuk planning terkait
     setMessages((prev) =>
       prev.map((msg) => {
         if (msg.type === 'PLANNING' && msg.planning && msg.planning.id === planningId) {
@@ -166,14 +220,13 @@ export default function App() {
             if (step.id === stepId) {
               const updatedTasks = step.tasks.map((task) => {
                 if (task.id === taskId && task.operations) {
-                  const updatedOps = task.operations.map((op, idx) =>
-                    op.id === operationId || idx === operationId ? { ...op, status } : op
-                  );
-
-                  const totalDone = updatedOps.filter((o) => o.status === 'DONE').length;
-                  const taskStatus = updatedOps.length === totalDone ? 'DONE' as StatusTask : 'IN_PROGRESS' as StatusTask;
-
-                  return { ...task, status: taskStatus, operations: updatedOps };
+                  const updateOperations = task.operations.map(op => {
+                    if (op.id === operationId) {
+                      return {...op, status, apply: !op?.apply ? status === "DONE" ? true : false : op?.apply }
+                    }
+                    return op
+                  });
+                  return { ...task, operations: updateOperations };
                 }
                 return task;
               });
@@ -195,6 +248,8 @@ export default function App() {
     if (status === 'DONE') {
       executingTaskIdRef.current = null;
     }
+
+    console.log("Step: ", data);
 
     setMessages((prev) =>
       prev.map((msg) => {
@@ -298,21 +353,44 @@ export default function App() {
 
       else if (action === "GET_MODELS") {
         setLoadingGetModels(false);
+
+        const dataItem: Agent = data;
         setAgents(prev => [
-          ...prev.filter(p => p.provider !== data.provider),
-          data
+          ...prev.filter(p => p?.provider !== data?.provider),
+          dataItem
         ]);
+
+        if (message.type === "READ") {
+          const selectedIndexing = dataItem.models.find(m => m?.selectedIndexing)?.name ?? dataItem.models.filter(m => m.isEmbedding)[0]?.name;
+
+          const selectedPlanning = dataItem.models.find(m => m?.selectedPlanning)?.name ?? dataItem.models.filter(m => m.isChat)[0]?.name;
+
+          const selectedExecutor = dataItem.models.find(m => m?.selectedExecutor)?.name ?? dataItem.models.filter(m => m.isChat)[0]?.name;
+
+          setModel({
+            executor: selectedExecutor,
+            indexing: selectedIndexing,
+            planning: selectedPlanning
+          })
+        }
       }
 
       else if (action === "ERROR") {
         setLoadingGetModels(false);
         setIsLoading(false);
 
-        const data = message.data;
-
         console.log("Data error: ", data);
 
-        const dataItem: BackgroundMessage = data;
+        const dataItem: BackgroundMessage = data.data;
+
+        setAutoApply(false);
+        setMessages(prev => prev.map(m => m?.planning ? ({
+          ...m,
+          planning: (m.planning.id === (dataItem.data as any)?.planningId ? {
+            ...m?.planning,
+            status: "FAILED",
+          } : m?.planning),
+        }) : m));
         switch (dataItem.action) {
           case "EXECUTE_OPERATION": {
             updateStatusOperation(dataItem.data);
@@ -322,10 +400,7 @@ export default function App() {
             updateStatusTask(dataItem.data)
           }
         }
-        setIsRefresh(true);
       }
-
-      setNewUpdateAt(new Date());
     };
 
     window.addEventListener('message', handleMessage);
@@ -335,43 +410,125 @@ export default function App() {
 
   const executingOperationIdRef = useRef<string | number | null>(null);
 
+  // useEffect(() => {
+  //   if (!loadingOperation || !processTask || !processTask.operations) return;
+
+  //   let isCompleted = true;
+  //   let hasSentMessage = false;
+
+  //   const updatedOperations = processTask.operations.map((operation) => {
+  //     if (operation.status === "DONE") {
+  //       return operation;
+  //     }
+
+  //     if (operation.status === "IN_PROGRESS" || !autoApply) {
+  //       isCompleted = false;
+  //       return operation;
+  //     }
+
+  //     // Jika operasi masih TODO dan belum ada pesan yang dikirim pada siklus ini:
+  //     if (!hasSentMessage && (!operation.status || operation.status === "TODO")) {
+  //       hasSentMessage = true;
+  //       isCompleted = false;
+
+  //       const dataExecute = {
+  //         planningId: processTask?.planningId,
+  //         stepId: processTask?.stepId,
+  //         taskId: processTask.id,
+  //         operationId: operation.id,
+  //         operation: operation
+  //       };
+
+  //       const metaExecutor = getModelConfig(model.executor);
+  //       vscode?.postMessage({
+  //         command: 'SEND_MESSAGE',
+  //         action: "EXECUTE_OPERATION",
+  //         data: dataExecute,
+  //         history,
+  //         meta: metaExecutor
+  //       });
+
+  //       return { ...operation, status: "IN_PROGRESS" as StatusTask };
+  //     }
+
+  //     isCompleted = false;
+  //     return operation;
+  //   });
+
+  //   if (hasSentMessage) {
+  //     setTask({ ...processTask, operations: updatedOperations ?? [] });
+  //   }
+
+  //   if (isCompleted) {
+  //     setTask(null);
+  //     setLoadingOperation(false);
+  //   }
+  // }, [loadingOperation, processTask, autoApply, history, model]);
+
   useEffect(() => {
+    console.log(messages);
+
     const lastPlanningMsg = [...messages].reverse().find((m) => m.type === 'PLANNING' && m.planning);
     if (!lastPlanningMsg || !lastPlanningMsg.planning) return;
 
     const planning = lastPlanningMsg.planning;
     const goal = formatPlanning(planning);
 
-    for (const step of planning.steps) {
+    let finished = true;
+
+    for (const [index, step] of planning.steps.entries()) {
       if (step.status === "IN_PROGRESS") break;
 
-      const metaPlanning = getModelConfig(model.planning)
+      const provSteps = planning.steps.slice(0, index).map(s => s.description || "").slice(-2);
+      const nextSteps = planning.steps.slice(index + 1).map(s => s.description || "").slice(-2);
+
+      const metaPlanning = getModelConfig(model.planning);
+      const dataExecute: ExecuteStepData = {
+        goal,
+        step: step.description || "",
+        stepId: step.id,
+        planningId: planning.id,
+        type: step.type,
+        nextTasks: nextSteps,
+        previousTasks: provSteps
+      }
+
       if (step.tasks.length === 0) {
-        vscode?.postMessage({
-          command: "SEND_MESSAGE",
-          action: "EXECUTE_STEP",
-          data: { goal, step: step.description, stepId: step.id, planningId: planning.id, type: step.type } as ExecuteStepData,
-          history,
-          meta: metaPlanning
-        });
+        if (!loadingOperation) {
+          vscode?.postMessage({
+            command: "SEND_MESSAGE",
+            action: "EXECUTE_STEP",
+            data: dataExecute,
+            history,
+            meta: metaPlanning
+          });
+        }
+        finished = false;
+        console.log("Berhenti di execute step")
         break;
       }
 
       let isStepCompleted = true;
 
-      for (const task of step.tasks) {
+      for (const [indexTask, task] of step.tasks.entries()) {
         if (task.status === "IN_PROGRESS") {
           isStepCompleted = false;
+          finished = false;
+          console.log("Berhenti karena task masih dalam progress: ", task.title);
           break;
         }
 
         if (task.status === "TODO") {
           isStepCompleted = false;
 
-          if (executingTaskIdRef.current !== task.id) {
-            executingTaskIdRef.current = task.id; // Kunci eksekusi task
+          const executeTaskId = `step:${step.id}:${task.id}`;
+          if (executingTaskIdRef.current !== executeTaskId && !loadingOperation) {
+            executingTaskIdRef.current = executeTaskId;
 
             const metaExecutor = getModelConfig(model.executor);
+            const provTasks = step.tasks.slice(0, indexTask).map(task => task.description).slice(-2);
+            const nextTasks = step.tasks.slice(indexTask + 1).map(task => task.description).slice(-2);
+
             vscode?.postMessage({
               command: "SEND_MESSAGE",
               action: "EXECUTE_TASK",
@@ -381,60 +538,69 @@ export default function App() {
                 stepId: step.id,
                 taskId: task.id,
                 planningId: planning.id,
-                type: step.type
+                type: step.type,
+                nextTasks: nextTasks,
+                previousTasks: provTasks
               },
               history,
               meta: metaExecutor
             });
+            finished = false;
+            break;
           }
-          break;
         }
 
         if (task.status === "DONE" && task.operations && task.operations.length > 0) {
-          const totalOperationDone = task.operations.reduce(
-            (acc, val) => (val.status === "DONE" ? acc + 1 : acc),
-            0
-          );
+          const todoOpIsAvaliable = task.operations.some(op => op.status === "TODO");
+          let isTaskCompleted = true;
 
-          if (totalOperationDone < task.operations.length) {
-            if (autoApply) {
-              for (const operation of task.operations) {
-                let isTaskCompleted = true;
-                if (operation.status === "IN_PROGRESS") {
+          if (todoOpIsAvaliable && !loadingOperation) {
+            for (const operation of task.operations) {
+              if (operation.status === "DONE") continue;
+
+              if (operation.status === "IN_PROGRESS") {
+                isTaskCompleted = false;
+                break;
+              }
+
+              const executingOperationId = `operation:${step.id}:${task.id}:${operation.id}`;
+
+              if (operation.status === "TODO") {
+                if (executingOperationIdRef.current === executingOperationId) {
                   isTaskCompleted = false;
                   break;
                 }
 
-                if (operation.status === "TODO") {
-                  // 2. KUNCI OPERASI: Cek apakah operation ini sudah pernah dipemicu
-                  if (executingOperationIdRef.current !== operation.id) {
-                    executingOperationIdRef.current = operation.id; // Set pengunci
+                executingOperationIdRef.current = executingOperationId;
 
-                    const dataExecute = {
-                      planningId: planning.id,
-                      stepId: step.id,
-                      taskId: task.id,
-                      operationId: operation.id,
-                      operation: operation
-                    };
+                const dataExecute = {
+                  planningId: planning.id,
+                  stepId: step.id,
+                  taskId: task.id,
+                  operationId: operation.id,
+                  operation: operation
+                };
 
-                    const metaExecutor = getModelConfig(model.executor);
-                    vscode?.postMessage({
-                      command: 'SEND_MESSAGE',
-                      action: "EXECUTE_OPERATION",
-                      data: dataExecute,
-                      history,
-                      meta: metaExecutor
-                    });
-                  }
+                const metaExecutor = getModelConfig(model.executor);
+                vscode?.postMessage({
+                  command: 'SEND_MESSAGE',
+                  action: "EXECUTE_OPERATION",
+                  data: dataExecute,
+                  history,
+                  meta: metaExecutor
+                });
 
-                  isTaskCompleted = false;
-                  break; // Keluar dari loop operation
-                }
-                if (!isTaskCompleted) break;
+                setTaskId(`planning:${planning.id}:${step.id}:${task.id}`);
+                setLoadingOperation(true);
+                isTaskCompleted = false;
+                break;
               }
             }
+          }
+
+          if (!isTaskCompleted) {
             isStepCompleted = false;
+            finished = false;
             break;
           }
         }
@@ -444,135 +610,17 @@ export default function App() {
         break;
       }
     }
-  }, [messages, autoApply]);
 
-  const checkTask = (messages: ChatMessage[]) => {
-    const lastPlanningMsg = [...messages].reverse().find((m) => m.type === 'PLANNING' && m.planning);
-    if (!lastPlanningMsg || !lastPlanningMsg.planning) return;
-
-    const planning = lastPlanningMsg.planning;
-    const goal = formatPlanning(planning);
-
-    for (const step of planning.steps) {
-      if (step.status === "IN_PROGRESS") break;
-
-      if (step.tasks.length === 0) {
-        const metaPlanning = getModelConfig(model.planning)
-        vscode?.postMessage({
-          command: "SEND_MESSAGE",
-          action: "EXECUTE_STEP",
-          data: { goal, step: step.description, stepId: step.id, planningId: planning.id, type: step.type } as ExecuteStepData,
-          history,
-          meta: metaPlanning
-        });
-        break;
-      }
-
-      let isStepCompleted = true; // Flag untuk mengecek apakah seluruh task di step ini benar-benar selesai
-
-      for (const task of step.tasks) {
-        if (task.status === "IN_PROGRESS") {
-          isStepCompleted = false;
-          break; // Keluar dari loop task
-        }
-
-        if (task.status === "TODO") {
-          isStepCompleted = false; // Step belum selesai karena ada yang TODO
-
-          if (executingTaskIdRef.current !== task.id) {
-            executingTaskIdRef.current = task.id; // Kunci eksekusi
-
-            const metaExecutor = getModelConfig(model.executor);
-            vscode?.postMessage({
-              command: "SEND_MESSAGE",
-              action: "EXECUTE_TASK",
-              data: {
-                goal,
-                task: task.description || step.description,
-                stepId: step.id,
-                taskId: task.id,
-                planningId: planning.id,
-              },
-              history,
-              meta: metaExecutor
-            });
-          }
-          break; // Keluar dari loop task
-        }
-
-        if (task.status === "DONE" && task.operations && task.operations.length > 0) {
-          const totalOperationDone = task.operations.reduce(
-            (acc, val) => (val.status === "DONE" ? acc + 1 : acc),
-            0
-          );
-
-          if (totalOperationDone < task.operations.length) {
-            if (autoApply) {
-              for (const operation of task.operations) {
-                let isTaskCompleted = true;
-                if (operation.status === "IN_PROGRESS") {
-                  isTaskCompleted = false;
-                  break;
-                };
-                if (operation.status === "TODO") {
-                  const dataExecute = {
-                    planningId: planning.id,
-                    stepId: step.id,
-                    taskId: task.id,
-                    operationId: operation.id,
-                    operation: operation
-                  }
-                  const metaExecutor = getModelConfig(model.executor);
-                  vscode?.postMessage({
-                    command: 'SEND_MESSAGE',
-                    action: "EXECUTE_OPERATION",
-                    data: dataExecute,
-                    history,
-                    meta: metaExecutor
-                  });
-
-                  isTaskCompleted = false;
-                  break;
-                }
-                if (!isTaskCompleted) break;
-              }
-            }
-            isStepCompleted = false;
-            break; // Keluar dari loop task
-          }
-        }
-      }
-
-      if (!isStepCompleted) {
-        break;
-      }
+    if (finished) {
+      setMessages(prev => prev.map(message => message.id === lastPlanningMsg.id ? ({
+        ...message,
+        planning: message.planning ? {
+          ...message.planning,
+          status: "DONE"
+        } : undefined
+      }) : message));
     }
-  }
-
-  useEffect(() => {
-    checkTask(messages);
-  }, [messages]);
-
-  useEffect(() => {
-    if (!newUpdateAt) return;
-
-    const fiveMinutesInMs = 5 * 60 * 1000;
-
-    const checkTime = () => {
-      const lastUpdate = new Date(newUpdateAt).getTime();
-      const now = Date.now();
-
-      if (now - lastUpdate > fiveMinutesInMs) {
-        setIsRefresh(true);
-      }
-    };
-
-    checkTime();
-
-    const intervalId = setInterval(checkTime, 10000);
-
-    return () => clearInterval(intervalId);
-  }, [newUpdateAt]);
+  }, [messages, autoApply, loadingOperation]);
 
   const handleSend = async (value: string, planning: string, indexing: string, executor: string) => {
     if (!value.trim() || isLoading) return;
@@ -653,6 +701,150 @@ export default function App() {
         return null;
     }
   };
+
+  const handleRetryPlan = (id: string) => {
+    const message = messages.find(message => message.planning ? message.planning.id === id ? true : false : false);
+    const planning = message?.planning;
+
+    if (!planning) return;
+
+    const goal = formatPlanning(planning);
+
+    for (const [index, step] of planning.steps.entries()) {
+      if (step.status === "IN_PROGRESS") break;
+
+      const provSteps = planning.steps.slice(0, index).map(s => s.description || "").slice(-2);
+      const nextSteps = planning.steps.slice(index + 1).map(s => s.description || "").slice(-2);
+
+      const metaPlanning = getModelConfig(model.planning);
+      const dataExecute: ExecuteStepData = {
+        goal,
+        step: step.description || "",
+        stepId: step.id,
+        planningId: planning.id,
+        type: step.type,
+        nextTasks: nextSteps,
+        previousTasks: provSteps
+      }
+      if (step.tasks.length === 0) {
+        vscode?.postMessage({
+          command: "SEND_MESSAGE",
+          action: "EXECUTE_STEP",
+          data: dataExecute,
+          history,
+          meta: metaPlanning
+        });
+        break;
+      }
+
+      let isStepCompleted = true;
+
+      for (const [indexTask, task] of step.tasks.entries()) {
+        if (task.status === "IN_PROGRESS") {
+          isStepCompleted = false;
+          break;
+        }
+
+        if (task.status === "TODO") {
+          isStepCompleted = false;
+
+          if (executingTaskIdRef.current !== task.id) {
+            executingTaskIdRef.current = task.id; // Kunci eksekusi task
+
+            const metaExecutor = getModelConfig(model.executor);
+            const provTasks = step.tasks.slice(0, indexTask).map(task => task.description).slice(-2);
+            const nextTasks = step.tasks.slice(indexTask + 1).map(task => task.description).slice(-2);
+
+            vscode?.postMessage({
+              command: "SEND_MESSAGE",
+              action: "EXECUTE_TASK",
+              data: {
+                goal,
+                task: task.description || step.description,
+                stepId: step.id,
+                taskId: task.id,
+                planningId: planning.id,
+                type: step.type,
+                nextTasks: nextTasks,
+                previousTasks: provTasks
+              },
+              history,
+              meta: metaExecutor
+            });
+          }
+          break;
+        }
+
+        if (task.status === "DONE" && task.operations && task.operations.length > 0) {
+          const totalOperationDone = task.operations.reduce(
+            (acc, val) => (val.status === "DONE" ? acc + 1 : acc),
+            0
+          );
+
+          if (totalOperationDone < task.operations.length) {
+            for (const operation of task.operations) {
+              let isTaskCompleted = true;
+              if (operation.status === "IN_PROGRESS") {
+                const dataExecute = {
+                  planningId: planning.id,
+                  stepId: step.id,
+                  taskId: task.id,
+                  operationId: operation.id,
+                  operation: operation
+                };
+
+                const metaExecutor = getModelConfig(model.executor);
+                vscode?.postMessage({
+                  command: 'SEND_MESSAGE',
+                  action: "EXECUTE_OPERATION",
+                  data: dataExecute,
+                  history,
+                  meta: metaExecutor
+                });
+                isTaskCompleted = false;
+                break;
+              }
+
+              if (operation.status === "TODO") {
+                if (executingOperationIdRef.current !== operation.id) {
+                  executingOperationIdRef.current = operation.id; // Set pengunci
+
+                  const dataExecute = {
+                    planningId: planning.id,
+                    stepId: step.id,
+                    taskId: task.id,
+                    operationId: operation.id,
+                    operation: operation
+                  };
+
+                  const metaExecutor = getModelConfig(model.executor);
+                  vscode?.postMessage({
+                    command: 'SEND_MESSAGE',
+                    action: "EXECUTE_OPERATION",
+                    data: dataExecute,
+                    history,
+                    meta: metaExecutor
+                  });
+                }
+
+                isTaskCompleted = false;
+                break; // Keluar dari loop operation
+              }
+              if (!isTaskCompleted) break;
+            }
+            isStepCompleted = false;
+            break;
+          }
+        }
+      }
+
+      if (!isStepCompleted) {
+        break;
+      }
+
+      setMessages(prev => prev.map(mes => mes.planning ? mes.planning.id === id ? ({ ...mes, planning: { ...mes.planning, status: "IN_PROGRESS" } }) : mes : mes))
+    }
+  }
 
   return (
     <div className="flex flex-col h-screen text-xs select-none bg-[var(--vscode-sideBar-background)] text-[var(--vscode-sideBar-foreground)] font-sans">
@@ -752,13 +944,13 @@ export default function App() {
             };
 
             // Handler manual saat pengguna menekan tombol Apply pada Operation
-            const handleApplyOperation = (stepId: number, taskId: number, op: any, idx: number) => {
+            const handleApplyOperation = (stepId: number, taskId: number, operation: Operation) => {
               const dataExecute = {
                 planningId: plan.id,
                 stepId,
                 taskId,
-                operationId: op.id ?? idx,
-                operation: op
+                operationId: operation.id,
+                operation: operation
               }
               vscode?.postMessage({
                 command: 'SEND_MESSAGE',
@@ -771,7 +963,19 @@ export default function App() {
 
             return (
               <div key={msg.id} className="w-full space-y-2.5 py-1 text-[11px] bg-transparent">
-
+                {plan.status === 'FAILED' && (
+                  <div className="p-3 rounded bg-rose-950/30 border border-rose-500/40 flex items-center justify-between gap-2">
+                    <div className="text-xs text-rose-200 font-medium">
+                      ⚠️ Proses gagal dijalankan. Silakan coba proses ulang.
+                    </div>
+                    <button
+                      onClick={() => handleRetryPlan(plan.id)}
+                      className="px-3 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white font-semibold text-[10px] transition-all shadow-sm cursor-pointer flex items-center gap-1.5 shrink-0"
+                    >
+                      <span>🔄</span> Process Ulang
+                    </button>
+                  </div>
+                )}
                 {/* Goal Header */}
                 <div className="pb-1 border-b border-[var(--vscode-widget-border,rgba(255,255,255,0.08))]">
                   <div className="flex items-center gap-1.5 font-bold text-indigo-400">
@@ -783,21 +987,27 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Steps Container */}
                 <div className="space-y-2">
                   {plan.steps.map((step) => {
-                    // Hanya tampilkan task yang aktif atau sudah jalan/selesai
+                    // Hanya tampilkan task yang aktif atau sudah jalan/selesai (Queue flow)
                     const activeTasks = step.tasks.filter((task) => task.status !== 'TODO');
 
-                    // Jika tidak ada task aktif di step ini, jangan tampilkan Step sama sekali
                     if (step.status === "TODO") return null;
 
                     return (
                       <div key={step.id} className="space-y-1.5 pl-1">
-                        {/* Title Step */}
-                        <div className="font-semibold text-[10px] text-sky-400/90 flex items-center gap-1">
-                          <span>Step {step.id}:</span>
-                          <span className="opacity-90">{step.title}</span>
+                        <div className="font-semibold text-[10px] text-sky-400/90 flex items-center justify-between w-full">
+                          <div className="flex items-center gap-1">
+                            <span>Step {step.id}:</span>
+                            <span className="opacity-90">{step.title}</span>
+                          </div>
+
+                          {step.status === "IN_PROGRESS" && (
+                            <div className="flex items-center gap-1 text-sky-400">
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                              <span className="text-[9px] lowercase italic opacity-90">running...</span>
+                            </div>
+                          )}
                         </div>
 
                         {/* Tasks List */}
@@ -807,18 +1017,12 @@ export default function App() {
                             const isTaskDone = task.status === 'DONE';
                             const operations = task.operations || [];
 
-                            // Cari index dari operation pertama yang belum dieksekusi (TODO/tanpa status)
-                            const nextPendingOpIndex = operations.findIndex(
-                              (op) => !op.status || op.status === 'TODO'
-                            );
-
-                            // Cek apakah ada operation yang sedang berjalan
-                            const hasOpRunning = operations.some((op) => op.status === 'IN_PROGRESS');
+                            const isOperationRunning = loadingOperation && taskId === `planning:${plan.id}:${step.id}:${task.id}`;
 
                             return (
                               <div
                                 key={task.id}
-                                className={`p-2 rounded transition-all space-y-2 ${isTaskRunning
+                                className={`p-2 rounded transition-all space-y-2 ${isTaskRunning || isOperationRunning
                                   ? 'bg-indigo-950/20 border border-indigo-500/40'
                                   : 'bg-[var(--vscode-editor-background)] border border-[var(--vscode-widget-border,rgba(255,255,255,0.06))]'
                                   }`}
@@ -826,98 +1030,104 @@ export default function App() {
                                 {/* Task Header */}
                                 <div className="flex items-center justify-between gap-2">
                                   <div className="flex items-center gap-1.5 font-medium min-w-0">
-                                    {isTaskRunning ? (
+                                    {isTaskRunning || isOperationRunning ? (
                                       <span className="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin shrink-0" />
                                     ) : isTaskDone ? (
                                       <span className="text-emerald-400 font-bold shrink-0">✓</span>
                                     ) : (
                                       <span className="text-slate-500 shrink-0">○</span>
                                     )}
-                                    <span className={`truncate ${isTaskRunning ? 'text-indigo-200 font-semibold' : 'opacity-90'}`}>
+                                    <span className={`truncate ${isTaskRunning || isOperationRunning ? 'text-indigo-200 font-semibold' : 'opacity-90'}`}>
                                       {task.title}
                                     </span>
                                   </div>
 
-                                  <span className={`text-[9px] font-semibold shrink-0 ${isTaskRunning ? 'text-amber-400 animate-pulse' : isTaskDone ? 'text-emerald-400' : ''}`}>
-                                    {isTaskRunning ? 'IN PROGRESS' : isTaskDone ? 'DONE' : ''}
-                                  </span>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <span className={`text-[9px] font-semibold ${isTaskRunning || isOperationRunning ? 'text-amber-400 animate-pulse' : isTaskDone ? 'text-emerald-400' : ''}`}>
+                                      {isOperationRunning ? 'APPLYING...' : isTaskRunning ? 'IN PROGRESS' : isTaskDone ? 'DONE' : ''}
+                                    </span>
+                                  </div>
                                 </div>
 
-                                {/* Operations List (Hanya tampil jika Task bernilai DONE) */}
-                                {isTaskDone && operations.length > 0 && (
+                                {/* Operations List (Tampil satu per satu secara berurutan / progresif) */}
+                                {operations.length > 0 && (
                                   <div className="space-y-1.5 pt-1">
-                                    {operations.map((op, idx) => {
-                                      const isOpRunning = op.status === 'IN_PROGRESS';
-                                      const isOpDone = op.status === 'DONE';
-                                      const isOpPending = !op.status || op.status === 'TODO';
-                                      const targetText = 'path' in op ? op.path : op.command;
+                                    {operations
+                                      .filter((op, idx) => {
+                                        if (op.status === 'DONE' || op.status === 'IN_PROGRESS') return true;
 
-                                      // Tombol Apply manual HANYA aktif untuk operasi TODO urutan pertama dan jika tidak ada yang sedang berjalan
-                                      const canApply = isOpPending && idx === nextPendingOpIndex && !hasOpRunning;
+                                        // Cek apakah semua operasi sebelum index ini sudah DONE
+                                        const prevOpsAreDone = operations.slice(0, idx).every(prev => prev.status === 'DONE');
+                                        return prevOpsAreDone;
+                                      })
+                                      .map((op, idx) => {
+                                        const isOpRunning = op.status === 'IN_PROGRESS';
+                                        const isOpDone = op.status === 'DONE';;
+                                        const targetText = 'path' in op ? op.path : op.command;
+                                        const canApply = op.status === "DONE" && op?.apply;
 
-                                      return (
-                                        <div
-                                          key={idx}
-                                          className="flex flex-col gap-1 p-1.5 rounded bg-[var(--vscode-input-background)] border border-[var(--vscode-input-border)] space-y-1"
-                                        >
-                                          {/* Header baris operation */}
-                                          <div className="flex items-center justify-between gap-2">
-                                            <div className="flex items-center gap-1.5 min-w-0 font-mono text-[9px]">
-                                              {renderOpBadge(op.type)}
-                                              <code className="truncate px-1 py-0.5 rounded bg-[var(--vscode-editor-background)] text-[9px] text-amber-200/90 border border-[var(--vscode-widget-border,rgba(255,255,255,0.04))]">
-                                                {targetText}
-                                              </code>
+                                        return (
+                                          <div
+                                            key={idx}
+                                            className="flex flex-col gap-1 p-1.5 rounded bg-[var(--vscode-input-background)] border border-[var(--vscode-input-border)] space-y-1"
+                                          >
+                                            {/* Header baris operation */}
+                                            <div className="flex items-center justify-between gap-2">
+                                              <div className="flex items-center gap-1.5 min-w-0 font-mono text-[9px]">
+                                                {renderOpBadge(op.type)}
+                                                <code className="truncate px-1 py-0.5 rounded bg-[var(--vscode-editor-background)] text-[9px] text-amber-200/90 border border-[var(--vscode-widget-border,rgba(255,255,255,0.04))]">
+                                                  {targetText}
+                                                </code>
+                                              </div>
+
+                                              {/* Status Icon & Tombol Apply per Operation */}
+                                              <div className="shrink-0 flex items-center gap-1.5">
+                                                {isOpRunning && (
+                                                  <span className="w-2.5 h-2.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                                                )}
+
+                                                {isOpDone && (
+                                                  <span className="text-[10px] text-emerald-400 font-bold">✓</span>
+                                                )}
+
+                                                {canApply && (
+                                                  <button
+                                                    onClick={() => handleApplyOperation(step.id, task.id, op)}
+                                                    className="px-2 py-0.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[8px] transition-all shadow-sm cursor-pointer flex items-center gap-1"
+                                                  >
+                                                    <span>Apply</span>
+                                                  </button>
+                                                )}
+                                              </div>
                                             </div>
 
-                                            {/* Status Icon & Tombol Apply */}
-                                            <div className="shrink-0 flex items-center gap-1.5">
-                                              {isOpRunning && (
-                                                <span className="w-2.5 h-2.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
-                                              )}
+                                            {/* Detail operasi */}
+                                            {'changes' in op && op.changes && op.changes.length > 0 && (
+                                              <div className="pl-1 border-l-2 border-amber-500/40 text-[8.5px] font-mono text-amber-200/70 space-y-0.5">
+                                                {op.changes.map((change, cIdx) => (
+                                                  <div key={cIdx} className="truncate">
+                                                    <span className="text-rose-400">- {change.search}</span>
+                                                    <br />
+                                                    <span className="text-emerald-400">+ {change.replace}</span>
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            )}
 
-                                              {isOpDone && (
-                                                <span className="text-[10px] text-emerald-400 font-bold">✓</span>
-                                              )}
+                                            {'cwd' in op && op.cwd && (
+                                              <div className="text-[8.5px] font-mono opacity-50 pl-1">
+                                                📁 cwd: {op.cwd}
+                                              </div>
+                                            )}
 
-                                              {/* Tombol Apply untuk eksekusi manual satu per satu */}
-                                              {canApply && (
-                                                <button
-                                                  onClick={() => handleApplyOperation(step.id, task.id, op, idx)}
-                                                  className="px-2 py-0.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[8px] transition-all shadow-sm cursor-pointer"
-                                                >
-                                                  Apply
-                                                </button>
-                                              )}
-                                            </div>
+                                            {'content' in op && op.content && (
+                                              <pre className="text-[8px] font-mono p-1 rounded bg-[var(--vscode-editor-background)] opacity-70 max-h-16 overflow-hidden truncate">
+                                                {op.content.trim().slice(0, 100)}...
+                                              </pre>
+                                            )}
                                           </div>
-
-                                          {/* Detail operasi */}
-                                          {'changes' in op && op.changes && op.changes.length > 0 && (
-                                            <div className="pl-1 border-l-2 border-amber-500/40 text-[8.5px] font-mono text-amber-200/70 space-y-0.5">
-                                              {op.changes.map((change, cIdx) => (
-                                                <div key={cIdx} className="truncate">
-                                                  <span className="text-rose-400">- {change.search}</span>
-                                                  <br />
-                                                  <span className="text-emerald-400">+ {change.replace}</span>
-                                                </div>
-                                              ))}
-                                            </div>
-                                          )}
-
-                                          {'cwd' in op && op.cwd && (
-                                            <div className="text-[8.5px] font-mono opacity-50 pl-1">
-                                              📁 cwd: {op.cwd}
-                                            </div>
-                                          )}
-
-                                          {'content' in op && op.content && (
-                                            <pre className="text-[8px] font-mono p-1 rounded bg-[var(--vscode-editor-background)] opacity-70 max-h-16 overflow-hidden truncate">
-                                              {op.content.trim().slice(0, 100)}...
-                                            </pre>
-                                          )}
-                                        </div>
-                                      );
-                                    })}
+                                        );
+                                      })}
                                   </div>
                                 )}
                               </div>
@@ -948,21 +1158,13 @@ export default function App() {
             <span>Agent sedang menyusun instruksi...</span>
           </div>
         )}
-        {isRefresh && <button
-          onClick={() => {
-            checkTask(messages);
-            setIsRefresh(false);
-            setNewUpdateAt(new Date());
-          }}
-          className="w-full py-1.5 px-2 bg-[var(--vscode-button-background)] text-[var(--vscode-button-foreground)] rounded font-semibold hover:bg-[var(--vscode-button-hoverBackground)] disabled:opacity-30 disabled:cursor-not-allowed transition-all text-center"
-        >
-          Lanjutkan
-        </button>}
         <div ref={chatEndRef} />
       </div>
 
       {/* Input Field */}
       <AgentInput
+        inputValue={inputValue}
+        setInputValue={setInputValue}
         model={model}
         onChangeModel={changeModel}
         agents={agents}

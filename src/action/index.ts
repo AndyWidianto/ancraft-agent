@@ -44,6 +44,18 @@ export default class ActionService {
         return agent;
     }
 
+    async deleteEmbeddings() {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) {
+            vscode.window.showErrorMessage('Tidak ada workspace yang sedang terbuka!');
+            return;
+        }
+
+        const rootUri = workspaceFolders[0].uri;
+
+        await this.database.deleteEmbeddingsByPath(`${rootUri.path}/*`);
+    }
+
     async createExtensionFile(filePath: string, content: string) {
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders) {
@@ -71,16 +83,28 @@ export default class ActionService {
 
     async readModels(webviewView: vscode.WebviewView, modelService: ModelService) {
         for (const item of ['.gemini.json', '.openai.json', '.claude.json']) {
-            modelService.readModelConfig(item)
-                .then(async (value) => {
-                    console.log(value);
-                    if (value) {
-                        this.receiveMessage.receiveModels(webviewView, value);
-                    }
-                })
+            const models = await modelService.readModelConfig(item);
+            if (models) {
+                console.log(models);
+                this.receiveMessage.receiveModels(webviewView, models, "READ");
+            }
         }
     }
 
+    async saveModels(modelService: ModelService, provider: TypeProvider, data: any) {
+        const filename = provider === "OPENAI"
+            ? `.openai.json`
+            : provider === "GEMINI"
+                ? '.gemini.json'
+                : '.claude.json';
+
+        // Coba simpan ke file
+        try {
+            await modelService.saveModelConfig(filename, data);
+        } catch (fileErr) {
+            console.error(`Gagal menyimpan file ${filename}:`, fileErr);
+        }
+    }
     async getModels(provider: TypeProvider, apikey: string, webviewView: vscode.WebviewView, modelService: ModelService) {
         try {
             const agent = await this.connectedProvider({ provider, apikey });
@@ -92,25 +116,14 @@ export default class ActionService {
                 models
             };
 
-            const filename = provider === "OPENAI"
-                ? `.openai.json`
-                : provider === "GEMINI"
-                    ? '.gemini.json'
-                    : '.claude.json';
-
-            // Coba simpan ke file
-            try {
-                await modelService.saveModelConfig(filename, data);
-            } catch (fileErr) {
-                console.error(`Gagal menyimpan file ${filename}:`, fileErr);
-            }
+            await this.saveModels(modelService, provider, data);
 
             // Kirim tetap berjalan ke UI Webview
             this.receiveMessage.receiveModels(webviewView, {
                 provider,
                 apikey,
                 models
-            });
+            }, "CREATE");
         } catch (err) {
             console.error("Gagal mengambil model:", err);
         }
@@ -121,12 +134,12 @@ export default class ActionService {
             provider: data.meta.provider,
             apikey: data.meta.apikey
         });
-        const analisis = await this.execute.getAnalisisTeckStack(agent, data.data.text, data.meta.model, signal);
+        //const analisis = await this.execute.getAnalisisTeckStack(agent, data.data.text, data.meta.model, signal);
         const projectContext = await this.execute.getProjectContext(true, "");
-        const planning = await this.execute.getPlanning(agent, data.meta.model, analisis, projectContext, signal);
+        const planning = await this.execute.getPlanning(agent, data.meta.model, data.data.text, projectContext, signal);
 
         const planningId = uuid();
-        this.receiveMessage.receivePlanning(webviewView, planningId, planning);
+        this.receiveMessage.receivePlanning(webviewView, { ...planning, id: planningId, status: "IN_PROGRESS" });
     }
 
     async executeStep(webviewView: vscode.WebviewView, message: ExecuteStepMessage, signal?: AbortSignal) {
@@ -139,7 +152,17 @@ export default class ActionService {
 
         this.receiveMessage.receiveUpdateStep(webviewView, item.planningId, item.stepId, "IN_PROGRESS");
         const projectContext = await this.execute.getProjectContext(true, "");
-        const subPlanning = await this.execute.getSubPlanning(agent, message.meta.model, projectContext, item.goal, item.step, message.history);
+
+        const subPlanning = await this.execute.getSubPlanning(
+            agent,
+            message.meta.model,
+            projectContext,
+            item.goal,
+            item.step,
+            item.previousTasks,
+            item.nextTasks,
+            signal
+        );
 
         this.receiveMessage.receiveNewTask(webviewView, item.planningId, item.stepId, subPlanning.tasks);
         this.receiveMessage.receiveUpdateStep(webviewView, item.planningId, item.stepId, "DONE");
@@ -219,9 +242,17 @@ export default class ActionService {
         console.log(accumulatedContext.join('\n'));
 
         if (message.data.type !== "SETUP") {
-            responseAgent = await this.execute.Execute(agent, message.meta.model, item.task, projectContext, accumulatedContext, signal);
+            responseAgent = await this.execute.Execute(
+                agent,
+                message.meta.model,
+                item.task,
+                projectContext,
+                accumulatedContext,
+                (item.previousTasks ?? []).join('\n'),
+                (item.nextTasks ?? []).join('\n'),
+                signal
+            );
         } else {
-            projectContext = await this.execute.getProjectContext(false, ".");
             responseAgent = await this.execute.setupProject(agent, message.meta.model, message.data.task, projectContext, signal);
         }
         if (responseAgent.status === "READY" || responseAgent.status === "BLOCKED") {
@@ -235,22 +266,24 @@ export default class ActionService {
         }
     }
     async executeOperation(webviewView: vscode.WebviewView, message: ExecuteOperationMessage, signal?: AbortSignal) {
-        const agent = await this.connectedProvider({
-            provider: message.meta.provider,
-            apikey: message.meta.apikey
-        });
+
         const item = message.data;
         const operation = item.operation;
 
-        // 1. Status IN_PROGRESS
         this.receiveMessage.receiveUpdateOperation(
             webviewView,
             message.data.planningId,
             item.stepId,
             item.taskId,
+            "IN_PROGRESS",
             operation.id,
-            "IN_PROGRESS"
+            operation,
         );
+
+        const agent = await this.connectedProvider({
+            provider: message.meta.provider,
+            apikey: message.meta.apikey
+        });
 
         let isSuccess = false;
 
@@ -277,17 +310,17 @@ export default class ActionService {
             console.error("[ExecuteOperation] Crash/Unhandled Error:", error);
         } finally {
             const finalStatus: StatusTask = isSuccess ? "DONE" : "FAILED";
-
             setTimeout(() => {
                 this.receiveMessage.receiveUpdateOperation(
                     webviewView,
                     message.data.planningId,
                     item.stepId,
                     item.taskId,
+                    finalStatus,
                     operation.id,
-                    finalStatus
+                    operation,
                 );
-            }, 50);
+            }, 500);
         }
     }
     async errorHandler(

@@ -1,11 +1,11 @@
 export type StatusTask = "TODO" | "IN_PROGRESS" | "DONE" | "FAILED";
 
 export type StepType =
-    | "FRONTEND"
-    | "DESIGN"
-    | "INTEGRATION"
-    | "VALIDATION"
-    | "SETUP";
+  | "FRONTEND"
+  | "DESIGN"
+  | "INTEGRATION"
+  | "VALIDATION"
+  | "SETUP";
 
 
 export interface Task {
@@ -29,6 +29,7 @@ export interface Step {
 
 export interface PlanningMessageData {
   id: string;
+  status: StatusTask;
   goal: {
     title: string;
     description: string;
@@ -51,10 +52,10 @@ export interface PlanningMessageData {
   finished: boolean;
 }
 
-export interface OperationCreate { type: "CREATE"; path: string; content: string; }
-export interface OperationModify { type: "MODIFY"; path: string; changes: { search: string; replace: string }[]; }
-export interface OperationDelete { type: "DELETE"; path: string; }
-export interface OperationCommand { type: "COMMAND"; command: string; cwd: string; }
+export interface OperationCreate { apply?: boolean; id: number, type: "CREATE"; path: string; content: string; }
+export interface OperationModify { apply?: boolean; id: number, type: "MODIFY"; path: string; changes: { search: string; replace: string }[]; }
+export interface OperationDelete { apply?: boolean; id: number, type: "DELETE"; path: string; }
+export interface OperationCommand { apply?: boolean; id: number, type: "COMMAND"; command: string; cwd: string; }
 export type Operation = OperationCommand | OperationCreate | OperationDelete | OperationModify;
 
 export type ActionType = 'TEXT' | "NEW_HISTORY" | "ERROR" | "GET_MODELS"
@@ -96,6 +97,8 @@ export interface ExecuteStepData {
   step: string;
   stepId: number;
   planningId: string; // sesuaikan jika id Anda selalu string/number
+  nextTasks?: string[];
+  previousTasks?: string[];
 }
 
 
@@ -178,6 +181,9 @@ export interface Model {
   code_name: string;
   isChat: boolean;
   isEmbedding: boolean;
+  selectedIndexing: boolean;
+  selectedPlanning: boolean;
+  selectedExecutor: boolean;
 }
 
 export interface Agent {

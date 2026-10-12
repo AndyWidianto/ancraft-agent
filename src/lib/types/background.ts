@@ -8,7 +8,9 @@ export interface ExecuteStepData {
   goal: string;
   step: string;
   stepId: number;
-  planningId: string; // sesuaikan jika id Anda selalu string/number
+  planningId: string; 
+  nextTasks?: string[];
+  previousTasks?: string[];
 }
 
 export interface ExecuteStepMessage {
@@ -46,7 +48,9 @@ export interface ExecuteTaskData {
   stepId: number;
   taskId: number;
   planningId: string;
-  type: StepType
+  type: StepType;
+  nextTasks?: string[];
+  previousTasks?: string[];
 }
 
 export interface ExecuteTaskMessage {
@@ -66,15 +70,15 @@ export interface Provider {
   }
 }
 
+
+
 export interface OperationMessage {
   stepId: number;
   taskId: number;
   task: string;
   planningId: string;
   operationId: number;
-  operation: Operation & {
-    id: number;
-  };
+  operation: Operation;
 }
 export interface ExecuteOperationMessage {
   command: "SEND_MESSAGE";
@@ -84,7 +88,9 @@ export interface ExecuteOperationMessage {
 }
 
 export interface Request {
-  command: "ABORT_REQUEST" | "WEBVIEW_READY";
+  command: "ABORT_REQUEST" | "WEBVIEW_READY" | "SELECTED_MODEL";
+  models?: any;
+  provider: TypeProvider;
 }
 // Discriminated Union untuk gabungan semua message yang dikirim
 export type BackgroundMessage = ExecuteStepMessage | ExecuteTaskMessage | TextMessage | ExecuteOperationMessage | Provider | Request;

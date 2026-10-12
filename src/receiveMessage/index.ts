@@ -1,13 +1,12 @@
 import { WebviewView } from "vscode";
-import { Model, Operation, OperationResult, OutputPlan, StatusTask, Task, TypeProvider } from "../lib/types";
+import { Model, Operation, OperationResult, OutputPlan, Planning, StatusTask, Task, TypeProvider } from "../lib/types";
 
 export default class ReceiveMessage {
 
 
-    receivePlanning(webviewView: WebviewView, planningId: string, planning: OutputPlan) {
+    receivePlanning(webviewView: WebviewView, planning: Planning) {
         const dataPlanning = {
             ...planning,
-            id: planningId,
             steps: planning.steps.map(step => ({ ...step, tasks: [], status: "TODO" as StatusTask }))
         }
         webviewView.webview.postMessage({
@@ -93,13 +92,15 @@ export default class ReceiveMessage {
         planningId: string,
         stepId: number,
         taskId: number,
+        status: StatusTask,
         operationId: number,
-        status: StatusTask
+        operation?: Operation,
     ) {
         const dataTask = {
             taskId,
             planningId,
             stepId,
+            operation,
             operationId,
             status
         }
@@ -132,12 +133,14 @@ export default class ReceiveMessage {
 
     receiveModels(
         webviewView: WebviewView,
-        data: { provider: TypeProvider, apikey: string, models: Model[] }
+        data: { provider: TypeProvider, apikey: string, models: Model[] },
+        type?: string
     ) {
         webviewView.webview.postMessage({
             command: "RECEIVE_MESSAGE",
             action: "GET_MODELS",
-            data: data
+            data: data,
+            type
         })
     }
 

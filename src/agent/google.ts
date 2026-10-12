@@ -58,7 +58,7 @@ export class GoogleAgent implements AgentAI {
         await this.delay(60000); // Wait 1 minute
         return this.sendMessage(message, model, retries - 1);
       }
-
+      vscode.window.showErrorMessage(err.message);
       throw err;
     }
   }
@@ -119,6 +119,9 @@ export class GoogleAgent implements AgentAI {
         code_name: codeModel,
         isEmbedding,
         isChat,
+        selectedExecutor: false,
+        selectedIndexing: false,
+        selectedPlanning: false,
       });
     }
 

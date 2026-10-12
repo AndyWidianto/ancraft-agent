@@ -52,12 +52,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
                 if (data.command === "WEBVIEW_READY") {
                     this.action.readModels(webviewView, this.modelService);
+                    this.action.deleteEmbeddings();
                 }
                 if (data.command === "ABORT_REQUEST") {
                     if (this.currentAbortController) {
                         this.currentAbortController.abort();
                         this.currentAbortController = null;
                     }
+                }
+                if (data.command === "SELECTED_MODEL") {
+                    await this.action.saveModels(this.modelService, data.models.provider, data.models);
                 }
                 if (data.command === "SEND_MESSAGE") {
                     if (this.currentAbortController) {

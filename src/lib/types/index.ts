@@ -60,6 +60,11 @@ export interface OutputPlan {
     steps: Step[];
 }
 
+export interface Planning extends OutputPlan {
+    status: StatusTask,
+    id: string;
+}
+
 
 
 export interface CreateOperation {
@@ -246,6 +251,9 @@ export interface Model {
     code_name: string;
     isEmbedding: boolean;
     isChat: boolean;
+    selectedIndexing: boolean;
+    selectedPlanning: boolean;
+    selectedExecutor: boolean;
 }
 
 

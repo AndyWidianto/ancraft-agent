@@ -55,7 +55,7 @@ export default class OpenAIService implements AgentAI {
                 await this.delay(60000); // Menunggu 1 menit
                 return this.sendMessage(message, model, retries - 1);
             }
-
+            vscode.window.showErrorMessage(err.message);
             throw err;
         }
     }
@@ -103,7 +103,10 @@ export default class OpenAIService implements AgentAI {
                     name: m.id,
                     code_name: m.id,
                     isEmbedding,
-                    isChat
+                    isChat,
+                    selectedIndexing: false,
+                    selectedExecutor: false,
+                    selectedPlanning: false,
                 };
             });
 

@@ -4,6 +4,8 @@ import { Loader2, Square } from 'lucide-react';
 
 
 export interface AgentInputProps {
+  inputValue: string;
+  setInputValue: (value: string) => void;
   isLoading: boolean;
   model: { planning: string, executor: string, indexing: string }
   onSubmit: (value: string, planning: string, indexingModel: string, executorModel: string) => void;
@@ -16,8 +18,20 @@ export interface AgentInputProps {
   getModels: ({ provider, apikey }: { provider: TypeProvider, apikey: string }) => void;
 }
 
-export default function AgentInput({ handleStop, isLoading, onSubmit, autoApply, setAutoApply, agents, getModels, loadingGetModels, onChangeModel, model }: AgentInputProps) {
-  const [inputValue, setInputValue] = useState('');
+export default function AgentInput({ 
+  handleStop, 
+  isLoading, 
+  onSubmit, 
+  autoApply, 
+  setAutoApply, 
+  agents, 
+  getModels, 
+  loadingGetModels, 
+  onChangeModel, 
+  model,
+  inputValue,
+  setInputValue
+}: AgentInputProps) {
 
 
   // State Modal Provider & API Keys

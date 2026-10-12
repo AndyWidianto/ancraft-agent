@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { AgentAI, Model, ResponseAI } from "../lib/types";
+import vscode from "vscode";
 
 export default class AnthropicAgent implements AgentAI {
     private client: Anthropic;
@@ -45,6 +46,7 @@ export default class AnthropicAgent implements AgentAI {
                 console.warn(`[Anthropic] Retrying sendMessage... Sisa attempt: ${retry}`);
                 return this.sendMessage(prompt, model, retry - 1, signal);
             }
+            vscode.window.showErrorMessage(error.message);
             throw error;
         }
     }
@@ -61,6 +63,9 @@ export default class AnthropicAgent implements AgentAI {
                 code_name: model.id,
                 isChat: true,
                 isEmbedding: false,
+                selectedIndexing: false,
+                selectedExecutor: false,
+                selectedPlanning: false,
             });
         }
 

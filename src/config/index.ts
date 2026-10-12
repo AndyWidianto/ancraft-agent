@@ -218,7 +218,14 @@ export default class DatabaseSql {
     async deleteEmbeddingsByPath(filePath: string): Promise<void> {
         if (!this.db) throw new Error("Database belum diinisialisasi");
 
-        this.db.run(`DELETE FROM embeddings WHERE file_path = ?`, [filePath]);
+        const queryPath = filePath.includes('*') ? filePath.replace(/\*/g, '%') : filePath;
+
+        if (queryPath.includes('%')) {
+            this.db.run(`DELETE FROM embeddings WHERE file_path LIKE ?`, [queryPath]);
+        } else {
+            this.db.run(`DELETE FROM embeddings WHERE file_path = ?`, [queryPath]);
+        }
+
         this.saveToDisk();
     }
 
