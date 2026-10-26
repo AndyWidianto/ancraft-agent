@@ -14,9 +14,14 @@
 		"types": [
 			"node",
 			"mocha"
-		]
+		],
 	},
+	"include": [
+		"src/**/*"
+	],
 	"exclude": [
-		"src/webview"
+		"node_modules",
+		".vscode-test",
+		"webview"
 	]
 }

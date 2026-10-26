@@ -1,7 +1,5 @@
 .vscode/**
 .vscode-test/**
-out/**
-node_modules/**
 src/**
 .gitignore
 .yarnrc
@@ -12,4 +10,29 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 **/.vscode-test.*
-src/webview/*
+.git/
+
+# Abaikan source code mentah webview saja, TETAP SERTAKAN hasil build-nya:
+webview/**
+
+
+node_modules/**
+
+
+!node_modules/@lancedb/
+!node_modules/@lancedb/**S
+!node_modules/apache-arrow/
+!node_modules/apache-arrow/**
+!node_modules/flatbuffers/
+!node_modules/flatbuffers/**
+!node_modules/tslib/
+!node_modules/tslib/**
+!node_modules/@swc/
+!node_modules/reflect-metadata/**
+!node_modules/@swc/helpers/**
+!node_modules/@opentelemetry/api/**
+
+
+!node_modules/@google/**
+# !node_modules/openai/**
+# !node_modules/@anthropic-ai/**

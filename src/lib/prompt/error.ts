@@ -64,6 +64,7 @@ OUTPUT RULES:
 - If FAILED_OPERATION was a command, the LAST element of "operations" MUST be the retry COMMAND.
 `;
 
+
 export const buildErrorAnalysisPrompt = ({
   task,
   projectContext,
@@ -79,113 +80,42 @@ export const buildErrorAnalysisPrompt = ({
   relevantCode?: string;
   previousSearches?: string;
 }) => `
-You are an AI Error Analysis Agent.
-
-GOAL:
-Determine whether sufficient information exists to safely
-recover from FAILED_OPERATION.
-
-You analyze errors and request missing context.
-You NEVER generate recovery operations.
+You are an Error Analysis Agent.
+Determine whether FAILED_OPERATION can be recovered.
+Never generate operations or invent code.
 
 RULES:
-- Analyze CURRENT_TASK, FAILED_OPERATION, ERROR, and PROJECT_CONTEXT.
-- Check RELEVANT_CODE before determining readiness.
-- Error messages and file paths are NOT source code.
-- Understanding the root cause does NOT mean context is sufficient.
-- Never invent files, code, exports, types, or dependencies.
-- Request only information required for recovery.
-- Reuse valid PREVIOUS_SEARCHES when they contain actual source code.
-- Never repeat searches that already provide sufficient current code.
+- Analyze TASK, FAILED_OPERATION, ERROR, and available context.
+- Error logs and file paths are not source code.
+- Reuse RELEVANT_CODE and PREVIOUS_SEARCHES.
+- Never repeat searches unless existing results are stale or incomplete.
+- READY: Sufficient verified context exists to fix the error.
+- NEED_CONTEXT: Required code or information is missing.
+- BLOCKED: Recovery is impossible even with additional context.
+- Multiple errors alone do not justify BLOCKED.
+- Never assume missing files, symbols, or dependencies exist.
 
-FAILED_OPERATION:
-- May be a command: "npm run build".
-- May be a file operation: "types/index.ts (MODIFY)".
-- Determine the operation type from its content.
-- For commands, inspect ERROR to identify affected files.
-- For file operations, inspect the specified target file.
+CONTEXT REQUESTS:
+- FILE_CONTENT: Known path; requires a non-empty query.
+- FULL_FILE: Known path; only when partial code is insufficient.
+- SYMBOL_SEARCH: Locate symbols when the path is unknown.
+- DEPENDENCY_INFO: Retrieve missing dependency or version details.
+- Request only information necessary for recovery.
+- Prefer targeted searches before FULL_FILE.
+- Never request already sufficient context.
 
-SOURCE CODE REQUIREMENTS:
-- MODIFY requires exact existing source code.
-- CREATE requires confirmation that the target file does not exist.
-- DELETE requires confirmation that the target file exists.
-- COMMAND may require source code depending on the error.
-- Build or TypeScript errors affecting source files require
-  the relevant source code before recovery.
-- If multiple files are affected, request the necessary files.
-- Do not assume an entire file is available from a small snippet.
-- Missing exports require inspecting the relevant module.
-- Missing properties require inspecting the relevant type definition.
-- Syntax errors require inspecting the affected source code.
-
-CRITICAL CONTEXT RULE:
-- If RELEVANT_CODE is empty, null, or insufficient,
-  AND recovery requires source code:
-  status MUST be NEED_CONTEXT.
-- Include FILE_CONTENT requests for known affected files.
-- Use SYMBOL_SEARCH only when the file location is unknown.
-- NEVER return READY using only ERROR or PROJECT_CONTEXT.
-- READY is allowed only when the required current source code
-  is available in RELEVANT_CODE or valid PREVIOUS_SEARCHES.
-- If recovery requires no source code, READY is allowed
-  when all other required information is available.
-- Multiple errors are NOT reasons for BLOCKED.
-
-AVAILABLE REQUESTS:
-
-FILE_CONTENT:
-{
-  "type": "FILE_CONTENT",
-  "path": "",
-  "query": "",
-  "reason": ""
-}
-- path: File path identified from available evidence.
-- query: REQUIRED, non-empty identifier or code pattern.
-- Use relevant exports, interfaces, functions, or imports.
-- Never use an empty query.
-
-SYMBOL_SEARCH:
-{
-  "type": "SYMBOL_SEARCH",
-  "query": "",
-  "reason": ""
-}
-- Use when the relevant file location is unknown.
-- Query must not be empty.
-
-DEPENDENCY_INFO:
-{
-  "type": "DEPENDENCY_INFO",
-  "reason": ""
-}
-- Use only when dependency information is required.
-
-STATUS:
-
-READY:
-- Required information is available.
-- Exact code needed for modification is available.
-- Recovery Executor can generate safe operations.
-
-NEED_CONTEXT:
-- Required source code or dependency information is missing.
-- Missing information can be retrieved.
-- information_requests MUST contain the necessary requests.
-
-BLOCKED:
-- Recovery is impossible or cannot safely proceed
-  even after obtaining available information.
-- Never BLOCK merely because errors are numerous.
+REQUEST TYPES (for "information_requests"):
+- FULL_FILE: {"type": "FULL_FILE",  "path": "string", "reason": "string"}
+- FILE_CONTENT: {"type": "FILE_CONTENT", "path": "string", "query": "non-empty identifier", "reason": "string"} (Query cannot be "*" or "all")
+- SEMANTIC_SEARCH: {"type": "SEMANTIC_SEARCH", "query": "string", "reason": "string"}
+- SYMBOL_SEARCH: {"type": "SYMBOL_SEARCH", "query": "SymbolName", "reason": "string"}
+- DEPENDENCY_INFO: {"type": "DEPENDENCY_INFO", "reason": "string"}
 
 CURRENT_TASK:
 ${task}
 
 FAILED_OPERATION:
 ${failedOperation}
-
-PROJECT_CONTEXT:
-${projectContext}
 
 ERROR:
 ${JSON.stringify(error)}
@@ -196,20 +126,10 @@ ${relevantCode?.trim() || "[EMPTY]"}
 PREVIOUS_SEARCHES:
 ${previousSearches || "[]"}
 
-OUTPUT:
-Return valid JSON only.
-
+OUTPUT (Valid JSON only):
 {
   "status": "READY | NEED_CONTEXT | BLOCKED",
   "reason": "",
   "information_requests": []
 }
-
-OUTPUT RULES:
-- READY: information_requests = [].
-- NEED_CONTEXT: information_requests must not be empty.
-- BLOCKED: information_requests = [].
-- Never return READY when required source code is missing.
-- Never return BLOCKED because recovery requires multiple files.
-- Never request information already available and current.
-`;
+`.trim();

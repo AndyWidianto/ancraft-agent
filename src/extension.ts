@@ -7,83 +7,61 @@ import { Execute } from './lib/execute';
 import DatabaseSql from './config';
 import EmbeddingService from './lib/embeddings';
 import ProjectContext from './lib/projectContext';
-import { AgentAI, AIProviderEnum } from './lib/types';
 import ReceiveMessage from './receiveMessage';
 import ActionService from './action';
 import { ModelService } from './model';
+import { GoogleAgent } from './agent/google';
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
+
 export async function activate(context: vscode.ExtensionContext) {
-	const fileManager = new WorkspaceFileManager();
-	const projectContext = new ProjectContext();
-	const execute = new Execute(fileManager, projectContext);
-	const database = new DatabaseSql();
-	const embedding = new EmbeddingService();
-	const receiveMessage = new ReceiveMessage();
-	const actionService = new ActionService(
-		receiveMessage,
-		execute,
-		projectContext,
-		database,
-		embedding,
-	);
-	const modelService = new ModelService(context.globalStorageUri);
-	const sidebarView = new SidebarProvider(
-		context.extensionUri,
-		actionService,
-		modelService,
-		receiveMessage
-	);
+    const embeddingValid = new Map<"EmbeddingValid", boolean>();
 
-	await database.init(context).catch((err) => console.log("Error: ", err));
+    // 1. Inisialisasi Core Services
+    const fileManager = new WorkspaceFileManager();
+    const projectContext = new ProjectContext();
+    const execute = new Execute(fileManager, projectContext);
+    const database = new DatabaseSql();
+    const modelService = new ModelService(context.globalStorageUri);
 
-	// vscode.window.withProgress({
-	// 	location: vscode.ProgressLocation.Window,
-	// 	title: "Indexing workspace code..."
-	// }, async () => {
-	// 	// const getConfig = await database.getAgentConfig("EMBEDDING");
-	// 	// if (!getConfig) return;
-	// 	const { agentExecutor } = await sidebarView.connectedProvider("GEMINI", "GEMINI");
-	// 	await emebddingFiles(agentExecutor, embedding, database);
-	// });
-	context.subscriptions.push(
-		vscode.window.registerWebviewViewProvider("chatSidebarView", sidebarView)
-	);
-}
+    // Inisialisasi Database LanceDB dengan Progress Window
+    await vscode.window.withProgress(
+        {
+            location: vscode.ProgressLocation.Window,
+            title: "Init database lancedb...",
+        },
+        async () => {
+            try {
+                await database.init(context);
+                await database.clearEmbeddingsTable();
+            } catch (err) {
+                console.error("Gagal menginisialisasi database:", err);
+            }
+        }
+    );
 
-async function emebddingFiles(agent: AgentAI, embedding: EmbeddingService, database: DatabaseSql) {
-	const includePattern =
-		"**/*.{ts,tsx,js,jsx,mjs,cjs,vue,svelte,php,prisma,sql,py,go,java,kt,kts,cs,rb,rs,json,yaml,yml,toml,xml,graphql,gql,html,css,scss,sass,less,md}";
+    // Inisialisasi Action & UI Services
+    const embedding = new EmbeddingService();
+    const receiveMessage = new ReceiveMessage();
 
-	const excludePattern =
-		"**/{node_modules,vendor,dist,build,.next,.nuxt,coverage,.git,storage/framework,bootstrap/cache}/**";
+    const actionService = new ActionService(
+        receiveMessage,
+        execute,
+        projectContext,
+        database,
+        embedding
+    );
 
-	const files = await vscode.workspace.findFiles(
-		includePattern,
-		excludePattern
-	);
-	for (const uri of files) {
-		let document: vscode.TextDocument;
+    const sidebarView = new SidebarProvider(
+        context.extensionUri,
+        actionService,
+        modelService,
+        receiveMessage
+    );
 
-		try {
-			document = await vscode.workspace.openTextDocument(uri);
-		} catch {
-			continue;
-		}
-
-		const text = document.getText();
-		if (!text.trim()) {
-			continue;
-		}
-		const findPath = await database.getEmbeddingsByPath(uri.path);
-		if (findPath) {
-			console.log("Context: ", findPath);
-			return;
-		}
-		const vectors = await embedding.embeddings(agent, text, uri.path);
-		await database.saveEmbeddings(vectors);
-	}
+    // Daftarkan Webview Provider
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider("chatSidebarView", sidebarView)
+    );
 }
 
 // This method is called when your extension is deactivated

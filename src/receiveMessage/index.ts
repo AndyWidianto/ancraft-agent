@@ -1,5 +1,5 @@
 import { WebviewView } from "vscode";
-import { Model, Operation, OperationResult, OutputPlan, Planning, StatusTask, Task, TypeProvider } from "../lib/types";
+import { AIModelData, Model, Operation, OperationResult, OutputPlan, Planning, StatusTask, Task, TypeProvider } from "../lib/types";
 
 export default class ReceiveMessage {
 
@@ -95,6 +95,7 @@ export default class ReceiveMessage {
         status: StatusTask,
         operationId: number,
         operation?: Operation,
+        error?: any,
     ) {
         const dataTask = {
             taskId,
@@ -102,7 +103,8 @@ export default class ReceiveMessage {
             stepId,
             operation,
             operationId,
-            status
+            status,
+            error
         }
         webviewView.webview.postMessage({
             command: "RECEIVE_MESSAGE",
@@ -116,13 +118,15 @@ export default class ReceiveMessage {
         planningId: string,
         stepId: number,
         taskId: number,
-        status: StatusTask
+        status: StatusTask,
+        result_search: { context: string[], history_query: string[] }
     ) {
         const dataTask = {
             taskId,
             planningId,
             stepId,
-            status
+            status,
+            result_search
         }
         webviewView.webview.postMessage({
             command: "RECEIVE_MESSAGE",
@@ -133,7 +137,7 @@ export default class ReceiveMessage {
 
     receiveModels(
         webviewView: WebviewView,
-        data: { provider: TypeProvider, apikey: string, models: Model[] },
+        data: AIModelData[],
         type?: string
     ) {
         webviewView.webview.postMessage({
@@ -141,6 +145,18 @@ export default class ReceiveMessage {
             action: "GET_MODELS",
             data: data,
             type
+        })
+    }
+
+    receiveMessageSelectedModel(
+        webviewView: WebviewView,
+        data: { indexing: AIModelData | null, planning: AIModelData | null, executor: AIModelData | null },
+        type?: string
+    ) {
+        webviewView.webview.postMessage({
+            command: "RECEIVE_MESSAGE",
+            action: "SELECTED_MODEL",
+            data: data,
         })
     }
 

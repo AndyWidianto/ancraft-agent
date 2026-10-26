@@ -1,4 +1,5 @@
 import type { StatusTask } from ".";
+import { DocumentationRequest } from "./documentation";
 
 export type ExecutorStatus =
   | "NEED_CONTEXT"
@@ -44,12 +45,26 @@ export interface DependencyInfoRequest {
   reason: string;
 }
 
+export interface FullFileRequest {
+  type: "FULL_FILE";
+  path: string;
+  reason: string;
+}
+
+export interface SearchDocument {
+  type: "FULL_FILE";
+  path: string;
+  reason: string;
+}
+
 export type InformationRequest =
   | ProjectStructureRequest
   | SemanticSearchRequest
   | FileContentRequest
   | SymbolSearchRequest
-  | DependencyInfoRequest;
+  | DependencyInfoRequest
+  | FullFileRequest
+  | DocumentationRequest;
 
 export interface NeedContextResult {
   status: "NEED_CONTEXT";

@@ -24,35 +24,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }
         webviewView.webview.html = this.getHtmlForView(webviewView.webview);
 
-        // this.connectedProvider({
-        // provider: data.meta.provider,
-        // apikey: data.meta.apikey}).then(async ({ agent }) => {
-        //     await this.executeOperation(webviewView, {
-        //         action: "EXECUTE_OPERATION",
-        //         command: "SEND_MESSAGE",
-        //         data: {
-        //             operation: {
-        //                 id: 1,
-        //                 command: "npm run build",
-        //                 cwd: '.',
-        //                 type: "COMMAND"
-        //             },
-        //             operationId: 1,
-        //             planningId: "121212",
-        //             stepId: 2,
-        //             task: "Run the build command to verify project compilation and ensure useTasks and app/tasks/page.tsx compile and render without errors.",
-        //             taskId: 2,
-        //         }
-        //     })
-        // })
 
         webviewView.webview.onDidReceiveMessage(async (data: BackgroundMessage) => {
             try {
                 console.log("Chat User: ", data);
 
                 if (data.command === "WEBVIEW_READY") {
-                    this.action.readModels(webviewView, this.modelService);
-                    this.action.deleteEmbeddings();
+                    await this.action.readModels(webviewView);
+                    
                 }
                 if (data.command === "ABORT_REQUEST") {
                     if (this.currentAbortController) {
@@ -60,8 +39,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         this.currentAbortController = null;
                     }
                 }
+
                 if (data.command === "SELECTED_MODEL") {
-                    await this.action.saveModels(this.modelService, data.models.provider, data.models);
+                    await this.action.selectedModel({ type: data.data?.type || "PLANNER", model: data.data?.model });
                 }
                 if (data.command === "SEND_MESSAGE") {
                     if (this.currentAbortController) {
@@ -92,6 +72,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                             await this.action.executeOperation(webviewView, data, signal);
                             break;
                         }
+                        case "EXECUTE_OPERATION_FAILED": {
+                            await this.action.resloveError(webviewView, data, signal);
+                            break;
+                        }
                     }
                     //await this.sendMessage(webviewView, data);
                 }
@@ -106,12 +90,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     private getHtmlForView(webview: vscode.Webview) {
         // Buat URI khusus untuk Script JS dan Style CSS dari folder dist webview
         const scriptUri = webview.asWebviewUri(
-            vscode.Uri.joinPath(this._extensionUri, 'dist', 'webview', 'assets', 'index.js')
+            vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'assets', 'index.js')
         );
 
         // Pastikan nama file CSS ini sesuai dengan hasil build Vite kamu (misal: index.css)
         const styleUri = webview.asWebviewUri(
-            vscode.Uri.joinPath(this._extensionUri, 'dist', 'webview', 'assets', 'index.css')
+            vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'assets', 'index.css')
         );
 
         return `<!DOCTYPE html>

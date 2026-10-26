@@ -1,20 +1,20 @@
 import { useState, useEffect, useRef } from 'react';
 import type {
+  AIModelData,
   ActionType,
-  Agent,
-  BackgroundMessage,
   ChatMessage,
   ExecuteStepData,
+  ModelState,
   Operation,
   OperationResult,
   PlanningMessageData,
   QuestionnaireData,
   TechStackData,
-  TypeProvider
 } from './types';
 //import { mockMessages } from './data/mockup';
 import AgentInput from './components/AgentInput';
 import { Loader2 } from 'lucide-react';
+import useCommands from './hooks/useCommand';
 
 export interface RefreshActionItem {
   action: string;
@@ -28,15 +28,16 @@ const vscode = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : nul
 
 export default function App() {
 
-  const [model, setModel] = useState({
-    planning: "",
-    executor: "",
-    indexing: ""
+  const [model, setModel] = useState<ModelState>({
+    planning: null,
+    executor: null,
+    indexing: null,
+    context: null,
   });
+  const [models, setModels] = useState<AIModelData[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [loadingOperation, setLoadingOperation] = useState(false);
   const [inputValue, setInputValue] = useState('');
-  const [agents, setAgents] = useState<Agent[]>([]);
   const [autoApply, setAutoApply] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -47,78 +48,31 @@ export default function App() {
 
   const [loadingGetModels, setLoadingGetModels] = useState(false);
 
+  const [isAutoScroll, setIsAutoScroll] = useState(true);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const executingTaskIdRef = useRef<number | string | null>(null);
 
-  const getModels = ({ provider, apikey }: { provider: TypeProvider, apikey: string }) => {
-    setLoadingGetModels(true);
-    vscode?.postMessage({
-      command: "SEND_MESSAGE",
-      action: "GET_MODELS",
-      data: { provider, apikey }
-    })
-  }
-
-  const handleStop = () => {
-    // Kirim sinyal pembatalan ke extension host / background
-    if (typeof vscode !== 'undefined') {
-      vscode?.postMessage({
-        command: 'ABORT_REQUEST',
-      });
-    }
-    setInputValue(cacheValue);
-    setIsLoading(false);
-  };
-
-  const getModelConfig = (modelCodeName: string) => {
-    const matchedAgent = agents.find((agent) =>
-      agent.models.some((m) => m.code_name === modelCodeName)
-    );
-
-    return {
-      provider: matchedAgent?.provider || '',
-      apikey: matchedAgent?.apikey || '',
-      model: modelCodeName,
-    };
-  };
-
-
-  const getModelsConfig = (modelCodeName: string) => {
-    const matchedAgent = agents.find((agent) =>
-      agent.models.some((m) => m.code_name === modelCodeName)
-    );
-
-    return matchedAgent;
-  };
-
-  const changeModel = (type: "plan" | "executor" | "indexing", value: string) => {
-    setModel(prev => ({
-      ...prev,
-      ...(type === "plan" ? { planning: value } : type === "executor" ? { executor: value } : { indexing: value })
-    }));
-
-    const models = getModelsConfig(value);
-    if (models) {
-      vscode?.postMessage({
-        command: "SELECTED_MODEL",
-        models: {
-          ...models,
-          models: models.models.map(model => {
-            // Jika code_name tidak cocok, kembalikan model apa adanya
-            if (model.code_name !== value) return model;
-
-            // Jika cocok, ubah status sesuai dengan tipenya
-            return {
-              ...model,
-              selectedPlanning: type === "plan" ? true : model.selectedPlanning,
-              selectedIndexing: type === "indexing" ? true : model.selectedIndexing,
-              selectedExecutor: type === "executor" ? true : model.selectedExecutor,
-            };
-          }),
-        }
-      })
-    }
-  }
+  const {
+    getModels,
+    handleStop,
+    getPlanning,
+    getOperations,
+    getTasks,
+    updateStatusOperation,
+    updateStatusStep,
+    updateStatusTask,
+    handleError
+  } = useCommands(vscode, {
+    setLoadingGetModels,
+    setInputValue,
+    setIsLoading,
+    cacheValue,
+    executingTaskIdRef,
+    setMessages,
+    setLoadingOperation,
+    setAutoApply,
+  })
 
   function formatPlanning(planning?: PlanningMessageData): string {
     if (!planning) return "";
@@ -143,153 +97,20 @@ export default function App() {
     return `${goalStr}\n${contextStr}`;
   }
 
+  const handleScroll = () => {
+    if (!scrollContainerRef.current) return;
+
+    const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
+    const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
+
+    setIsAutoScroll(isAtBottom);
+  };
+
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading]);
-
-  const getPlanning = (data: any) => {
-    setIsLoading(false);
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: data.id || Date.now().toString(),
-        sender: 'agent',
-        type: 'PLANNING',
-        timestamp: new Date().toISOString(),
-        planning: data
-      }
-    ]);
-  }
-
-  const getTasks = (data: any) => {
-    const { planningId, stepId, tasks } = data;
-    setMessages((prev) =>
-      prev.map((msg) => {
-        if (msg.type === 'PLANNING' && msg.planning && msg.planning.id === planningId) {
-          const updatedSteps = msg.planning.steps.map((step) => {
-            if (step.id === stepId) {
-              return { ...step, tasks: tasks };
-            }
-            return step;
-          });
-          return { ...msg, planning: { ...msg.planning, steps: updatedSteps } };
-        }
-        return msg;
-      })
-    );
-  }
-
-  const getOperations = (data: any) => {
-    const { planningId, stepId, taskId, operations } = data;
-    setMessages((prev) =>
-      prev.map((msg) => {
-        if (msg.type === 'PLANNING' && msg.planning && msg.planning.id === planningId) {
-          const updatedSteps = msg.planning.steps.map((step) => {
-            if (step.id === stepId) {
-              const updatedTasks = step.tasks.map((task) => {
-                if (task.id === taskId) {
-                  return { ...task, operations: operations };
-                }
-                return task;
-              });
-              return { ...step, tasks: updatedTasks };
-            }
-            return step;
-          });
-          return { ...msg, planning: { ...msg.planning, steps: updatedSteps } };
-        }
-        return msg;
-      })
-    );
-  }
-
-  const updateStatusOperation = (data: any) => {
-    const { planningId, stepId, taskId, status, operationId } = data;
-
-    console.log("Operation status update: ", data);
-
-    if (status === "DONE") {
-      setLoadingOperation(false);
+    if (isAutoScroll) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-
-    // Update state `setMessages` untuk planning terkait
-    setMessages((prev) =>
-      prev.map((msg) => {
-        if (msg.type === 'PLANNING' && msg.planning && msg.planning.id === planningId) {
-          const updatedSteps = msg.planning.steps.map((step) => {
-            if (step.id === stepId) {
-              const updatedTasks = step.tasks.map((task) => {
-                if (task.id === taskId && task.operations) {
-                  const updateOperations = task.operations.map(op => {
-                    if (op.id === operationId) {
-                      return {...op, status, apply: !op?.apply ? status === "DONE" ? true : false : op?.apply }
-                    }
-                    return op
-                  });
-                  return { ...task, operations: updateOperations };
-                }
-                return task;
-              });
-              return { ...step, tasks: updatedTasks };
-            }
-            return step;
-          });
-          return { ...msg, planning: { ...msg.planning, steps: updatedSteps } };
-        }
-        return msg;
-      })
-    );
-  }
-
-  const updateStatusStep = (data: any) => {
-    const { planningId, stepId, status } = data;
-
-    // Jika step selesai, lepaskan lock agar useEffect bebas memproses step selanjutnya
-    if (status === 'DONE') {
-      executingTaskIdRef.current = null;
-    }
-
-    console.log("Step: ", data);
-
-    setMessages((prev) =>
-      prev.map((msg) => {
-        if (msg.type === 'PLANNING' && msg.planning && msg.planning.id === planningId) {
-          const updatedSteps = msg.planning.steps.map((step) => {
-            if (step.id === stepId) {
-              return { ...step, status: status };
-            }
-            return step;
-          });
-          return { ...msg, planning: { ...msg.planning, steps: updatedSteps } };
-        }
-        return msg;
-      })
-    );
-  }
-
-  const updateStatusTask = (data: any) => {
-    const { planningId, stepId, taskId, status } = data;
-    setMessages((prev) =>
-      prev.map((msg) => {
-        if (msg.type === 'PLANNING' && msg.planning && msg.planning.id === planningId) {
-          const updatedSteps = msg.planning.steps.map((step) => {
-            if (step.id === stepId) {
-              const updatedTasks = step.tasks.map((task) => {
-                if (task.id === taskId) {
-                  return { ...task, status: status };
-                }
-                return task;
-              });
-              return { ...step, tasks: updatedTasks };
-            }
-            return step;
-          });
-          return { ...msg, planning: { ...msg.planning, steps: updatedSteps } };
-        }
-        return msg;
-      })
-    );
-  }
+  }, [messages, isLoading, isAutoScroll]);
 
   useEffect(() => {
     if (vscode) {
@@ -307,6 +128,7 @@ export default function App() {
 
       // Inisialisasi Planning Baru
       if (action === 'PLANNING') {
+        setIsLoading(false);
         getPlanning(data);
       }
 
@@ -353,53 +175,16 @@ export default function App() {
 
       else if (action === "GET_MODELS") {
         setLoadingGetModels(false);
+        const dataItem: AIModelData[] = data;
+        setModels(prev => [...prev, ...dataItem]);
+      }
 
-        const dataItem: Agent = data;
-        setAgents(prev => [
-          ...prev.filter(p => p?.provider !== data?.provider),
-          dataItem
-        ]);
-
-        if (message.type === "READ") {
-          const selectedIndexing = dataItem.models.find(m => m?.selectedIndexing)?.name ?? dataItem.models.filter(m => m.isEmbedding)[0]?.name;
-
-          const selectedPlanning = dataItem.models.find(m => m?.selectedPlanning)?.name ?? dataItem.models.filter(m => m.isChat)[0]?.name;
-
-          const selectedExecutor = dataItem.models.find(m => m?.selectedExecutor)?.name ?? dataItem.models.filter(m => m.isChat)[0]?.name;
-
-          setModel({
-            executor: selectedExecutor,
-            indexing: selectedIndexing,
-            planning: selectedPlanning
-          })
-        }
+      else if (action === "SELECTED_MODEL") {
+        setModel(prev => data ? data : prev);
       }
 
       else if (action === "ERROR") {
-        setLoadingGetModels(false);
-        setIsLoading(false);
-
-        console.log("Data error: ", data);
-
-        const dataItem: BackgroundMessage = data.data;
-
-        setAutoApply(false);
-        setMessages(prev => prev.map(m => m?.planning ? ({
-          ...m,
-          planning: (m.planning.id === (dataItem.data as any)?.planningId ? {
-            ...m?.planning,
-            status: "FAILED",
-          } : m?.planning),
-        }) : m));
-        switch (dataItem.action) {
-          case "EXECUTE_OPERATION": {
-            updateStatusOperation(dataItem.data);
-            break;
-          }
-          case "EXECUTE_TASK": {
-            updateStatusTask(dataItem.data)
-          }
-        }
+        handleError(data);
       }
     };
 
@@ -410,79 +195,26 @@ export default function App() {
 
   const executingOperationIdRef = useRef<string | number | null>(null);
 
-  // useEffect(() => {
-  //   if (!loadingOperation || !processTask || !processTask.operations) return;
-
-  //   let isCompleted = true;
-  //   let hasSentMessage = false;
-
-  //   const updatedOperations = processTask.operations.map((operation) => {
-  //     if (operation.status === "DONE") {
-  //       return operation;
-  //     }
-
-  //     if (operation.status === "IN_PROGRESS" || !autoApply) {
-  //       isCompleted = false;
-  //       return operation;
-  //     }
-
-  //     // Jika operasi masih TODO dan belum ada pesan yang dikirim pada siklus ini:
-  //     if (!hasSentMessage && (!operation.status || operation.status === "TODO")) {
-  //       hasSentMessage = true;
-  //       isCompleted = false;
-
-  //       const dataExecute = {
-  //         planningId: processTask?.planningId,
-  //         stepId: processTask?.stepId,
-  //         taskId: processTask.id,
-  //         operationId: operation.id,
-  //         operation: operation
-  //       };
-
-  //       const metaExecutor = getModelConfig(model.executor);
-  //       vscode?.postMessage({
-  //         command: 'SEND_MESSAGE',
-  //         action: "EXECUTE_OPERATION",
-  //         data: dataExecute,
-  //         history,
-  //         meta: metaExecutor
-  //       });
-
-  //       return { ...operation, status: "IN_PROGRESS" as StatusTask };
-  //     }
-
-  //     isCompleted = false;
-  //     return operation;
-  //   });
-
-  //   if (hasSentMessage) {
-  //     setTask({ ...processTask, operations: updatedOperations ?? [] });
-  //   }
-
-  //   if (isCompleted) {
-  //     setTask(null);
-  //     setLoadingOperation(false);
-  //   }
-  // }, [loadingOperation, processTask, autoApply, history, model]);
-
   useEffect(() => {
-    console.log(messages);
-
     const lastPlanningMsg = [...messages].reverse().find((m) => m.type === 'PLANNING' && m.planning);
     if (!lastPlanningMsg || !lastPlanningMsg.planning) return;
 
+
     const planning = lastPlanningMsg.planning;
+
+    if (planning.status === "FAILED") return;
+
+
     const goal = formatPlanning(planning);
 
     let finished = true;
 
     for (const [index, step] of planning.steps.entries()) {
-      if (step.status === "IN_PROGRESS") break;
+      if (step.status === "IN_PROGRESS" || step.status === "FAILED") break;
 
       const provSteps = planning.steps.slice(0, index).map(s => s.description || "").slice(-2);
       const nextSteps = planning.steps.slice(index + 1).map(s => s.description || "").slice(-2);
 
-      const metaPlanning = getModelConfig(model.planning);
       const dataExecute: ExecuteStepData = {
         goal,
         step: step.description || "",
@@ -500,7 +232,7 @@ export default function App() {
             action: "EXECUTE_STEP",
             data: dataExecute,
             history,
-            meta: metaPlanning
+            meta: { ...model.planning, providerId: model.planning?.provider_id }
           });
         }
         finished = false;
@@ -511,7 +243,7 @@ export default function App() {
       let isStepCompleted = true;
 
       for (const [indexTask, task] of step.tasks.entries()) {
-        if (task.status === "IN_PROGRESS") {
+        if (task.status === "IN_PROGRESS" || task.status === "FAILED") {
           isStepCompleted = false;
           finished = false;
           console.log("Berhenti karena task masih dalam progress: ", task.title);
@@ -525,7 +257,6 @@ export default function App() {
           if (executingTaskIdRef.current !== executeTaskId && !loadingOperation) {
             executingTaskIdRef.current = executeTaskId;
 
-            const metaExecutor = getModelConfig(model.executor);
             const provTasks = step.tasks.slice(0, indexTask).map(task => task.description).slice(-2);
             const nextTasks = step.tasks.slice(indexTask + 1).map(task => task.description).slice(-2);
 
@@ -540,10 +271,10 @@ export default function App() {
                 planningId: planning.id,
                 type: step.type,
                 nextTasks: nextTasks,
-                previousTasks: provTasks
+                previousTasks: provTasks,
               },
               history,
-              meta: metaExecutor
+              meta: { ...model.executor, providerId: model.executor?.provider_id, embedding: { ...model.indexing, providerId: model.indexing?.provider_id } }
             });
             finished = false;
             break;
@@ -551,10 +282,15 @@ export default function App() {
         }
 
         if (task.status === "DONE" && task.operations && task.operations.length > 0) {
+
           const todoOpIsAvaliable = task.operations.some(op => op.status === "TODO");
           let isTaskCompleted = true;
 
-          if (todoOpIsAvaliable && !loadingOperation) {
+          if (todoOpIsAvaliable) {
+            if (!autoApply) {
+              isStepCompleted = false;
+              break;
+            }
             for (const operation of task.operations) {
               if (operation.status === "DONE") continue;
 
@@ -581,13 +317,12 @@ export default function App() {
                   operation: operation
                 };
 
-                const metaExecutor = getModelConfig(model.executor);
                 vscode?.postMessage({
                   command: 'SEND_MESSAGE',
                   action: "EXECUTE_OPERATION",
                   data: dataExecute,
                   history,
-                  meta: metaExecutor
+                  meta: { ...model.executor, providerId: model.executor?.provider_id, embedding: { ...model.indexing, providerId: model.indexing?.provider_id } }
                 });
 
                 setTaskId(`planning:${planning.id}:${step.id}:${task.id}`);
@@ -607,6 +342,7 @@ export default function App() {
       }
 
       if (!isStepCompleted) {
+        finished = false;
         break;
       }
     }
@@ -620,9 +356,9 @@ export default function App() {
         } : undefined
       }) : message));
     }
-  }, [messages, autoApply, loadingOperation]);
+  }, [messages, autoApply]);
 
-  const handleSend = async (value: string, planning: string, indexing: string, executor: string) => {
+  const handleSend = async (value: string, _planning: string, _indexing: string, _executor: string) => {
     if (!value.trim() || isLoading) return;
 
     const userText = value.trim();
@@ -640,13 +376,6 @@ export default function App() {
     setCacheValue(userText);
     setIsLoading(true);
 
-    setModel({
-      planning,
-      indexing,
-      executor
-    })
-
-    const meta = getModelConfig(planning);
     vscode?.postMessage({
       command: 'SEND_MESSAGE',
       action: "TEXT",
@@ -654,7 +383,7 @@ export default function App() {
         text: userText,
       },
       history,
-      meta: meta
+      meta: { ...model.planning, providerId: model.planning?.provider_id }
     });
   };
 
@@ -692,6 +421,16 @@ export default function App() {
     });
   };
 
+  const sendSelectedModel = (type: "plan" | "executor" | "indexing" | "context", data: AIModelData) => {
+    vscode?.postMessage({
+      command: "SELECTED_MODEL",
+      data: {
+        type: type === "plan" ? "PLANNER" : type === "executor" ? "EXECUTOR" : type === "context" ? "CONTEXT_BUILDER" : "EMBEDDING",
+        model: data
+      }
+    })
+  }
+
   // Badge Warna untuk aksi CUD
   const getActionBadge = (type: ActionType) => {
     switch (type) {
@@ -702,154 +441,96 @@ export default function App() {
     }
   };
 
-  const handleRetryPlan = (id: string) => {
-    const message = messages.find(message => message.planning ? message.planning.id === id ? true : false : false);
-    const planning = message?.planning;
+  const handleRetryPlan = (_id: string) => {
+    console.log("Waadduh maaf untuk fitur ini masih dalam pengembangan jadi tunggu yah :) see you");
+  }
 
-    if (!planning) return;
+  const handleRetryStep = (planId: string, stepId: number) => {
+    messages.forEach(message => {
+      if (message.planning) {
+        const planning = message.planning;
+        const goal = formatPlanning(planning);
+        if (planning.id === planId) {
+          planning.steps.forEach((step, index) => {
+            if (step.id === stepId) {
 
-    const goal = formatPlanning(planning);
+              const provSteps = planning.steps.slice(0, index).map(s => s.description || "").slice(-2);
+              const nextSteps = planning.steps.slice(index + 1).map(s => s.description || "").slice(-2);
 
-    for (const [index, step] of planning.steps.entries()) {
-      if (step.status === "IN_PROGRESS") break;
-
-      const provSteps = planning.steps.slice(0, index).map(s => s.description || "").slice(-2);
-      const nextSteps = planning.steps.slice(index + 1).map(s => s.description || "").slice(-2);
-
-      const metaPlanning = getModelConfig(model.planning);
-      const dataExecute: ExecuteStepData = {
-        goal,
-        step: step.description || "",
-        stepId: step.id,
-        planningId: planning.id,
-        type: step.type,
-        nextTasks: nextSteps,
-        previousTasks: provSteps
-      }
-      if (step.tasks.length === 0) {
-        vscode?.postMessage({
-          command: "SEND_MESSAGE",
-          action: "EXECUTE_STEP",
-          data: dataExecute,
-          history,
-          meta: metaPlanning
-        });
-        break;
-      }
-
-      let isStepCompleted = true;
-
-      for (const [indexTask, task] of step.tasks.entries()) {
-        if (task.status === "IN_PROGRESS") {
-          isStepCompleted = false;
-          break;
-        }
-
-        if (task.status === "TODO") {
-          isStepCompleted = false;
-
-          if (executingTaskIdRef.current !== task.id) {
-            executingTaskIdRef.current = task.id; // Kunci eksekusi task
-
-            const metaExecutor = getModelConfig(model.executor);
-            const provTasks = step.tasks.slice(0, indexTask).map(task => task.description).slice(-2);
-            const nextTasks = step.tasks.slice(indexTask + 1).map(task => task.description).slice(-2);
-
-            vscode?.postMessage({
-              command: "SEND_MESSAGE",
-              action: "EXECUTE_TASK",
-              data: {
+              const dataExecute: ExecuteStepData = {
                 goal,
-                task: task.description || step.description,
+                step: step.description || "",
                 stepId: step.id,
-                taskId: task.id,
                 planningId: planning.id,
                 type: step.type,
-                nextTasks: nextTasks,
-                previousTasks: provTasks
-              },
-              history,
-              meta: metaExecutor
-            });
-          }
-          break;
-        }
-
-        if (task.status === "DONE" && task.operations && task.operations.length > 0) {
-          const totalOperationDone = task.operations.reduce(
-            (acc, val) => (val.status === "DONE" ? acc + 1 : acc),
-            0
-          );
-
-          if (totalOperationDone < task.operations.length) {
-            for (const operation of task.operations) {
-              let isTaskCompleted = true;
-              if (operation.status === "IN_PROGRESS") {
-                const dataExecute = {
-                  planningId: planning.id,
-                  stepId: step.id,
-                  taskId: task.id,
-                  operationId: operation.id,
-                  operation: operation
-                };
-
-                const metaExecutor = getModelConfig(model.executor);
+                nextTasks: nextSteps,
+                previousTasks: provSteps
+              }
+              if (!loadingOperation) {
                 vscode?.postMessage({
-                  command: 'SEND_MESSAGE',
-                  action: "EXECUTE_OPERATION",
+                  command: "SEND_MESSAGE",
+                  action: "EXECUTE_STEP",
                   data: dataExecute,
                   history,
-                  meta: metaExecutor
+                  meta: { ...model.planning, providerId: model.planning?.provider_id }
                 });
-                isTaskCompleted = false;
-                break;
               }
-
-              if (operation.status === "TODO") {
-                if (executingOperationIdRef.current !== operation.id) {
-                  executingOperationIdRef.current = operation.id; // Set pengunci
-
-                  const dataExecute = {
-                    planningId: planning.id,
-                    stepId: step.id,
-                    taskId: task.id,
-                    operationId: operation.id,
-                    operation: operation
-                  };
-
-                  const metaExecutor = getModelConfig(model.executor);
-                  vscode?.postMessage({
-                    command: 'SEND_MESSAGE',
-                    action: "EXECUTE_OPERATION",
-                    data: dataExecute,
-                    history,
-                    meta: metaExecutor
-                  });
-                }
-
-                isTaskCompleted = false;
-                break; // Keluar dari loop operation
-              }
-              if (!isTaskCompleted) break;
             }
-            isStepCompleted = false;
-            break;
-          }
+          })
         }
       }
-
-      if (!isStepCompleted) {
-        break;
-      }
-
-      setMessages(prev => prev.map(mes => mes.planning ? mes.planning.id === id ? ({ ...mes, planning: { ...mes.planning, status: "IN_PROGRESS" } }) : mes : mes))
-    }
+    })
   }
+
+  const handleRetryTask = (planId: string, stepId: number, taskId: number) => {
+    messages.forEach(message => {
+      if (message.planning) {
+        const planning = message.planning;
+        const goal = formatPlanning(planning);
+        if (planning.id === planId) {
+          planning.steps.forEach(step => {
+            if (step.id === stepId) {
+              step.tasks.forEach((task, indexTask) => {
+                if (task.id === taskId) {
+                  const provTasks = step.tasks.slice(0, indexTask).map(task => task.description).slice(-2);
+                  const nextTasks = step.tasks.slice(indexTask + 1).map(task => task.description).slice(-2);
+
+                  vscode?.postMessage({
+                    command: "SEND_MESSAGE",
+                    action: "EXECUTE_TASK",
+                    data: {
+                      goal,
+                      task: task.description || step.description,
+                      stepId: step.id,
+                      taskId: task.id,
+                      planningId: planning.id,
+                      type: step.type,
+                      nextTasks: nextTasks,
+                      previousTasks: provTasks,
+                    },
+                    history,
+                    meta: { ...model.executor, providerId: model.executor?.provider_id, embedding: { ...model.indexing, providerId: model.indexing?.provider_id } }
+                  });
+                }
+              })
+            }
+          })
+        }
+      }
+    })
+  }
+
+  // const handleResolveOperation = (_stepId: number, _taskId: number, _op: Operation) => {
+
+  // }
 
   return (
     <div className="flex flex-col h-screen text-xs select-none bg-[var(--vscode-sideBar-background)] text-[var(--vscode-sideBar-foreground)] font-sans">
       {/* Message List */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-4">
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto p-3 space-y-4">
         {messages.map((msg) => {
 
           if (msg.type === 'NEED_INFORMATION' && msg.questionnaireData) {
@@ -957,9 +638,26 @@ export default function App() {
                 action: "EXECUTE_OPERATION",
                 data: dataExecute,
                 history,
-                meta: getModelConfig(model.executor)
+                meta: { ...model.executor, providerId: model.executor?.provider_id, embedding: { ...model.indexing, providerId: model.indexing?.provider_id } }
               });
             };
+
+            const handleResolveOperation = (stepId: number, taskId: number, operation: Operation) => {
+              const dataExecute = {
+                planningId: plan.id,
+                stepId,
+                taskId,
+                operationId: operation.id,
+                operation: operation
+              }
+              vscode?.postMessage({
+                command: 'SEND_MESSAGE',
+                action: "EXECUTE_OPERATION_FAILED",
+                data: dataExecute,
+                history,
+                meta: { ...model.executor, providerId: model.executor?.provider_id, embedding: { ...model.indexing, providerId: model.indexing?.provider_id } }
+              });
+            }
 
             return (
               <div key={msg.id} className="w-full space-y-2.5 py-1 text-[11px] bg-transparent">
@@ -976,6 +674,21 @@ export default function App() {
                     </button>
                   </div>
                 )}
+
+                {(plan.status === 'IN_PROGRESS' || plan.status === 'TODO') && (
+                  <div className="p-3 rounded bg-amber-950/20 border border-amber-500/30 flex items-center justify-between gap-2">
+                    <div className="text-xs text-amber-200/90 font-medium flex items-center gap-1.5">
+                      <span className="animate-spin">⏳</span> Proses sedang berjalan...
+                    </div>
+                    <button
+                      onClick={() => handleStop()}
+                      className="px-3 py-1 rounded bg-zinc-700 hover:bg-red-600/80 text-white font-semibold text-[10px] transition-all shadow-sm cursor-pointer flex items-center gap-1.5 shrink-0"
+                    >
+                      <span>⏹️</span> Hentikan Proses
+                    </button>
+                  </div>
+                )}
+
                 {/* Goal Header */}
                 <div className="pb-1 border-b border-[var(--vscode-widget-border,rgba(255,255,255,0.08))]">
                   <div className="flex items-center gap-1.5 font-bold text-indigo-400">
@@ -994,37 +707,81 @@ export default function App() {
 
                     if (step.status === "TODO") return null;
 
+
+                    // Deteksi apakah Step mengalami gagal (FAILED)
+                    const isStepFailed = step.status === 'FAILED';
+
                     return (
                       <div key={step.id} className="space-y-1.5 pl-1">
                         <div className="font-semibold text-[10px] text-sky-400/90 flex items-center justify-between w-full">
                           <div className="flex items-center gap-1">
-                            <span>Step {step.id}:</span>
+                            {/* <span>Step {step.id}:</span> */}
                             <span className="opacity-90">{step.title}</span>
                           </div>
 
-                          {step.status === "IN_PROGRESS" && (
-                            <div className="flex items-center gap-1 text-sky-400">
-                              <Loader2 className="w-3 h-3 animate-spin" />
-                              <span className="text-[9px] lowercase italic opacity-90">running...</span>
-                            </div>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {step.status === "IN_PROGRESS" && (
+                              <div className="flex items-center gap-1 text-sky-400">
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                <span className="text-[9px] lowercase italic opacity-90">running...</span>
+                              </div>
+                            )}
+
+                            {/* Tombol Try Again untuk Step jika FAILED */}
+                            {isStepFailed && (
+                              <button
+                                onClick={() => handleRetryStep(plan.id, step.id)}
+                                className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-semibold text-[8px] transition-all shadow-sm cursor-pointer flex items-center gap-1"
+                              >
+                                <span>🔄</span>
+                                <span>Try Again</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
 
                         {/* Tasks List */}
-                        <div className="space-y-1.5 pl-2 border-l border-[var(--vscode-widget-border,rgba(255,255,255,0.1))]">
-                          {activeTasks.map((task) => {
+                        <div className={`space-y-1.5 pl-2 border-l ${isStepFailed ? 'border-rose-500/60' : 'border-[var(--vscode-widget-border,rgba(255,255,255,0.1))]'}`}>
+                          {activeTasks.map((task, indexTask) => {
                             const isTaskRunning = task.status === 'IN_PROGRESS';
                             const isTaskDone = task.status === 'DONE';
+                            const isTaskFailed = task.status === 'FAILED'; // Deteksi status FAILED pada Task
                             const operations = task.operations || [];
+
+                            const handleRefreshTask = () => {
+                              const goal = formatPlanning(plan);
+                              const provTasks = step.tasks.slice(0, indexTask).map(task => task.description).slice(-2);
+                              const nextTasks = step.tasks.slice(indexTask + 1).map(task => task.description).slice(-2);
+                              const dataExecute = {
+                                goal,
+                                task: task.description || step.description,
+                                stepId: step.id,
+                                taskId: task.id,
+                                planningId: plan.id,
+                                type: step.type,
+                                nextTasks: nextTasks,
+                                previousTasks: provTasks,
+                              }
+
+                              vscode?.postMessage({
+                                command: "SEND_MESSAGE",
+                                action: "EXECUTE_TASK",
+                                data: dataExecute,
+                                history,
+                                meta: { ...model.executor, providerId: model.executor?.provider_id, embedding: { ...model.indexing, providerId: model.indexing?.provider_id } }
+                              });
+                            }
 
                             const isOperationRunning = loadingOperation && taskId === `planning:${plan.id}:${step.id}:${task.id}`;
 
                             return (
                               <div
                                 key={task.id}
-                                className={`p-2 rounded transition-all space-y-2 ${isTaskRunning || isOperationRunning
-                                  ? 'bg-indigo-950/20 border border-indigo-500/40'
-                                  : 'bg-[var(--vscode-editor-background)] border border-[var(--vscode-widget-border,rgba(255,255,255,0.06))]'
+                                className={`p-2 rounded transition-all space-y-2 border ${isTaskFailed
+                                  ? 'bg-rose-950/20 border-rose-500/60'
+                                  : isTaskRunning || isOperationRunning
+                                    ? 'bg-indigo-950/20 border-indigo-500/40'
+                                    : 'bg-[var(--vscode-editor-background)] border-[var(--vscode-widget-border,rgba(255,255,255,0.06))]'
                                   }`}
                               >
                                 {/* Task Header */}
@@ -1034,27 +791,46 @@ export default function App() {
                                       <span className="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin shrink-0" />
                                     ) : isTaskDone ? (
                                       <span className="text-emerald-400 font-bold shrink-0">✓</span>
+                                    ) : isTaskFailed ? (
+                                      <span className="text-rose-400 font-bold shrink-0">✕</span>
                                     ) : (
                                       <span className="text-slate-500 shrink-0">○</span>
                                     )}
-                                    <span className={`truncate ${isTaskRunning || isOperationRunning ? 'text-indigo-200 font-semibold' : 'opacity-90'}`}>
+                                    <span className={`truncate ${isTaskRunning || isOperationRunning ? 'text-indigo-200 font-semibold' : isTaskFailed ? 'text-rose-200 font-semibold' : 'opacity-90'}`}>
                                       {task.title}
                                     </span>
                                   </div>
 
                                   <div className="flex items-center gap-2 shrink-0">
-                                    <span className={`text-[9px] font-semibold ${isTaskRunning || isOperationRunning ? 'text-amber-400 animate-pulse' : isTaskDone ? 'text-emerald-400' : ''}`}>
-                                      {isOperationRunning ? 'APPLYING...' : isTaskRunning ? 'IN PROGRESS' : isTaskDone ? 'DONE' : ''}
+                                    <span className={`text-[9px] font-semibold ${isTaskRunning || isOperationRunning ? 'text-amber-400 animate-pulse' : isTaskDone ? 'text-emerald-400' : isTaskFailed ? 'text-rose-400' : ''}`}>
+                                      {isOperationRunning ? 'APPLYING...' : isTaskRunning ? 'IN PROGRESS' : isTaskDone ? 'DONE' : isTaskFailed ? 'FAILED' : ''}
                                     </span>
                                   </div>
                                 </div>
+
+                                {/* Tombol Try Again di level Task jika Task FAILED */}
+                                {isTaskFailed && (
+                                  <div className="pt-1 mt-1 border-t border-rose-500/20 flex items-center justify-between">
+                                    <span className="text-[8px] text-rose-400 font-mono italic">
+                                      Task mengalami kegagalan.
+                                    </span>
+                                    <button
+                                      onClick={() => handleRetryTask(plan.id, step.id, task.id)}
+                                      className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-semibold text-[8px] transition-all shadow-sm cursor-pointer flex items-center gap-1"
+                                    >
+                                      <span>🔄</span>
+                                      <span>Try Again</span>
+                                    </button>
+                                  </div>
+                                )}
 
                                 {/* Operations List (Tampil satu per satu secara berurutan / progresif) */}
                                 {operations.length > 0 && (
                                   <div className="space-y-1.5 pt-1">
                                     {operations
                                       .filter((op, idx) => {
-                                        if (op.status === 'DONE' || op.status === 'IN_PROGRESS') return true;
+                                        // Tampilkan jika statusnya DONE, IN_PROGRESS, atau FAILED
+                                        if (op.status === 'DONE' || op.status === 'IN_PROGRESS' || op.status === 'FAILED') return true;
 
                                         // Cek apakah semua operasi sebelum index ini sudah DONE
                                         const prevOpsAreDone = operations.slice(0, idx).every(prev => prev.status === 'DONE');
@@ -1062,14 +838,21 @@ export default function App() {
                                       })
                                       .map((op, idx) => {
                                         const isOpRunning = op.status === 'IN_PROGRESS';
-                                        const isOpDone = op.status === 'DONE';;
+                                        const isOpDone = op.status === 'DONE';
+                                        const isOpFailed = op.status === 'FAILED';
                                         const targetText = 'path' in op ? op.path : op.command;
-                                        const canApply = op.status === "DONE" && op?.apply;
+                                        const canApply = op.status === "TODO";
+
+                                        // Mengambil pesan error dari op (mendukung properti operation_error, error, atau message)
+                                        // const operationError = (op as any)?.operation_error || (op as any)?.error || (op as any)?.message || "";
 
                                         return (
                                           <div
                                             key={idx}
-                                            className="flex flex-col gap-1 p-1.5 rounded bg-[var(--vscode-input-background)] border border-[var(--vscode-input-border)] space-y-1"
+                                            className={`flex flex-col gap-1 p-1.5 rounded bg-[var(--vscode-input-background)] border ${isOpFailed
+                                              ? 'border-rose-500/60 bg-rose-950/10'
+                                              : 'border-[var(--vscode-input-border)]'
+                                              } space-y-1`}
                                           >
                                             {/* Header baris operation */}
                                             <div className="flex items-center justify-between gap-2">
@@ -1090,6 +873,10 @@ export default function App() {
                                                   <span className="text-[10px] text-emerald-400 font-bold">✓</span>
                                                 )}
 
+                                                {isOpFailed && (
+                                                  <span className="text-[10px] text-rose-400 font-bold">✕</span>
+                                                )}
+
                                                 {canApply && (
                                                   <button
                                                     onClick={() => handleApplyOperation(step.id, task.id, op)}
@@ -1101,14 +888,14 @@ export default function App() {
                                               </div>
                                             </div>
 
-                                            {/* Detail operasi */}
+                                            {/* Detail operasi perubahan (changes) */}
                                             {'changes' in op && op.changes && op.changes.length > 0 && (
                                               <div className="pl-1 border-l-2 border-amber-500/40 text-[8.5px] font-mono text-amber-200/70 space-y-0.5">
                                                 {op.changes.map((change, cIdx) => (
                                                   <div key={cIdx} className="truncate">
-                                                    <span className="text-rose-400">- {change.search}</span>
+                                                    - <span className="text-rose-400">{change.search}</span>
                                                     <br />
-                                                    <span className="text-emerald-400">+ {change.replace}</span>
+                                                    + <span className="text-emerald-400">{change.replace}</span>
                                                   </div>
                                                 ))}
                                               </div>
@@ -1124,6 +911,49 @@ export default function App() {
                                               <pre className="text-[8px] font-mono p-1 rounded bg-[var(--vscode-editor-background)] opacity-70 max-h-16 overflow-hidden truncate">
                                                 {op.content.trim().slice(0, 100)}...
                                               </pre>
+                                            )}
+
+                                            {/* Tampilan Pesan Operation Error jika ada */}
+                                            {/* {isOpFailed && operationError && (
+                                              <div className="p-1 rounded bg-rose-950/30 border border-rose-500/30 text-[8px] font-mono text-rose-300 break-words">
+                                                <span className="font-bold">Error:</span> {operationError}
+                                              </div>
+                                            )} */}
+
+                                            {/* Bagian Bawah jika FAILED: Tombol Resolve & Try Again */}
+                                            {isOpFailed && (
+                                              <div className="pt-1 mt-1 border-t border-rose-500/20 flex items-center justify-between gap-1">
+                                                <span className="text-[8px] text-rose-400 font-mono italic truncate">
+                                                  Gagal dieksekusi.
+                                                </span>
+                                                <div className="flex items-center gap-1 shrink-0">
+                                                  {/* Tombol Resolve */}
+                                                  <button
+                                                    onClick={() => handleRefreshTask()}
+                                                    className="px-2 py-0.5 rounded bg-green-600 hover:bg-green-500 text-white font-semibold text-[8px] transition-all shadow-sm cursor-pointer flex items-center gap-1"
+                                                    title="Tandai atau selesaikan error ini"
+                                                  >
+                                                    <span>Refresh</span>
+                                                  </button>
+                                                  <button
+                                                    onClick={() => handleResolveOperation(step.id, task.id, op)}
+                                                    className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[8px] transition-all shadow-sm cursor-pointer flex items-center gap-1"
+                                                    title="Tandai atau selesaikan error ini"
+                                                  >
+                                                    <span>✓</span>
+                                                    <span>Resolve</span>
+                                                  </button>
+
+                                                  {/* Tombol Try Again */}
+                                                  <button
+                                                    onClick={() => handleApplyOperation(step.id, task.id, op)}
+                                                    className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-semibold text-[8px] transition-all shadow-sm cursor-pointer flex items-center gap-1"
+                                                  >
+                                                    <span>🔄</span>
+                                                    <span>Try Again</span>
+                                                  </button>
+                                                </div>
+                                              </div>
                                             )}
                                           </div>
                                         );
@@ -1166,8 +996,9 @@ export default function App() {
         inputValue={inputValue}
         setInputValue={setInputValue}
         model={model}
-        onChangeModel={changeModel}
-        agents={agents}
+        setModel={setModel}
+        models={models}
+        sendSelectedModel={sendSelectedModel}
         handleStop={handleStop}
         isLoading={isLoading}
         getModels={getModels}

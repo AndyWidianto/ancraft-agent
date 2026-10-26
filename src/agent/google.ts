@@ -7,14 +7,18 @@ export class GoogleAgent implements AgentAI {
   private ai!: GoogleGenAIType;
 
   private constructor() { }
-  public static async create({ apiKey }: { apiKey: string }): Promise<GoogleAgent> {
+
+  public static async create({
+    apiKey,
+  }: {
+    apiKey: string;
+  }): Promise<GoogleAgent> {
     const instance = new GoogleAgent();
 
-    const { GoogleGenAI } = await (eval('import("@google/genai")') as Promise<
-      typeof import('@google/genai')
-    >);
+    const { GoogleGenAI } = await import("@google/genai");
 
     instance.ai = new GoogleGenAI({ apiKey });
+
     return instance;
   }
 
@@ -38,36 +42,42 @@ export class GoogleAgent implements AgentAI {
       const outputToken = response.usage?.total_output_tokens ?? 0;
       const text = response.output_text || '';
 
-      return { text: text, totalTokens: { input: inputToken, output: outputToken }};
+      return { text: text, totalTokens: { input: inputToken, output: outputToken } };
     } catch (err: any) {
       console.log("Error: ", err);
-      const isServerOverload =
-        err?.status === 503 ||
-        err?.statusCode === 503 ||
-        err?.message?.includes('503') ||
-        err?.message?.includes('high demand') ||
-        err?.message?.includes('RESOURCE_EXHAUSTED') ||
-        err?.status === 429;
+      // const isServerOverload =
+      //   err?.status === 503 ||
+      //   err?.statusCode === 503 ||
+      //   err?.message?.includes('503') ||
+      //   err?.message?.includes('high demand') ||
+      //   err?.message?.includes('RESOURCE_EXHAUSTED') ||
+      //   err?.status === 429;
 
-      if (isServerOverload && retries > 0) {
-        console.warn(`[Gemini Overload/Rate Limit] Server sedang sibuk. Menunggu 1 menit... (Sisa retry: ${retries})`);
+      // if (isServerOverload && retries > 0) {
+      //   console.warn(`[Gemini Overload/Rate Limit] Server sedang sibuk. Menunggu 1 menit... (Sisa retry: ${retries})`);
 
-        // Beri tahu user via VS Code notification agar tidak bingung
-        vscode.window.showWarningMessage(`Gemini API sedang high demand (503). Menunggu 1 menit sebelum mencoba lagi...`);
+      //   // Beri tahu user via VS Code notification agar tidak bingung
+      //   vscode.window.showWarningMessage(`Gemini API sedang high demand (503). Menunggu 1 menit sebelum mencoba lagi...`);
 
-        await this.delay(60000); // Wait 1 minute
-        return this.sendMessage(message, model, retries - 1);
-      }
-      vscode.window.showErrorMessage(err.message);
+      //   await this.delay(60000); // Wait 1 minute
+      //   return this.sendMessage(message, model, retries - 1);
+      // }
+      // vscode.window.showErrorMessage(err.message);
       throw err;
     }
   }
 
-  async embedding(message: string, model: string = "gemini-embedding-001") {
+  async embedding(message: string, model: string = "gemini-embedding-002", signal?: AbortSignal, dimensions: number = 3072) {
+    const formattedModel = model.startsWith("models/") ? model : `models/${model}`;
     const response = await this.ai.models.embedContent({
-      model: model,
-      contents: message
+      model: formattedModel,
+      contents: message,
+      // Menetapkan ukuran dimensi secara eksplisit (default: 3072)
+      config: {
+        outputDimensionality: dimensions
+      }
     });
+
     const embed = response?.embeddings?.[0].values;
     if (!embed) {
       throw new Error("Gagal mendapatkan vector embedding dari Gemini API.");

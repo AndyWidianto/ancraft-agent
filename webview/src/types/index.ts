@@ -15,7 +15,11 @@ export interface Task {
   depends_on: number[];
   estimated_scope: "SMALL" | "MEDIUM";
   status?: StatusTask;
-  operations?: (Operation & { id: number; status?: StatusTask })[];
+  operations?: (Operation & { id: number; status?: StatusTask, error?: any })[];
+  result_search?: {
+    context: string[];
+    history_query: string[];
+  }
 }
 
 export interface Step {
@@ -60,7 +64,7 @@ export type Operation = OperationCommand | OperationCreate | OperationDelete | O
 
 export type ActionType = 'TEXT' | "NEW_HISTORY" | "ERROR" | "GET_MODELS"
   | 'PLANNING' | 'NEW_TASKS' | 'NEW_OPERATION' | 'UPDATE_OPERATION' | "UPDATE_STEP" |
-  'UPDATE_TASK' | 'NEED_INFORMATION' | "MORE";
+  'UPDATE_TASK' | 'NEED_INFORMATION' | "MORE" | "SELECTED_MODEL";
 
 export interface ChatMessage {
   id: string;
@@ -206,3 +210,25 @@ export interface ExecuteOperationMessage {
 }
 // Discriminated Union untuk gabungan semua message yang dikirim
 export type BackgroundMessage = ExecuteStepMessage | ExecuteTaskMessage | TextMessage | ExecuteOperationMessage;
+
+
+export type AIProviderEnum = "GEMINI" | "OPENAI" | "ANTHROPIC";
+
+export interface AIModelData {
+  id?: number;
+  provider_id: number;
+  provider_name: AIProviderEnum | string;
+  model_code: string;
+  model_name: string;
+  type?: 'LLM' | 'EMBEDDING';
+  max_tokens?: number;
+  is_default?: number;
+}
+
+
+export interface ModelState {
+  planning: AIModelData | null;
+  executor: AIModelData | null;
+  indexing: AIModelData | null;
+  context: AIModelData | null;
+}

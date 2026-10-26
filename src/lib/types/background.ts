@@ -1,4 +1,4 @@
-import type { OperationResult, StepType } from ".";
+import type { AIModelData, OperationResult, StepType } from ".";
 import type { Operation } from "./operation";
 
 export type TypeProvider = "GEMINI" | "OPENAI" | "ANTHROPIC";
@@ -8,7 +8,8 @@ export interface ExecuteStepData {
   goal: string;
   step: string;
   stepId: number;
-  planningId: string; 
+  planningId: string;
+  type: StepType;
   nextTasks?: string[];
   previousTasks?: string[];
 }
@@ -36,9 +37,16 @@ export interface TextMessage {
 
 
 export interface Meta {
+  providerId: number;
   apikey: string;
   provider: TypeProvider;
   model: string;
+  embedding: {
+    providerId: number;
+    apikey: string;
+    provider: TypeProvider;
+    model: string;
+  };
 }
 
 // Type untuk Action tipe "EXECUTE_TASK"
@@ -51,6 +59,10 @@ export interface ExecuteTaskData {
   type: StepType;
   nextTasks?: string[];
   previousTasks?: string[];
+  result_search?: {
+    content: string[],
+    history_query: string[]
+  }
 }
 
 export interface ExecuteTaskMessage {
@@ -58,6 +70,7 @@ export interface ExecuteTaskMessage {
   action: "EXECUTE_TASK";
   data: ExecuteTaskData;
   history: OperationResult[];
+  techStack: Record<string, any>;
   meta: Meta
 }
 
@@ -87,10 +100,23 @@ export interface ExecuteOperationMessage {
   meta: Meta
 }
 
+export interface ExecuteOperationFailedMessage {
+  command: "SEND_MESSAGE";
+  action: "EXECUTE_OPERATION_FAILED";
+  data: OperationMessage;
+  meta: Meta
+}
+
 export interface Request {
-  command: "ABORT_REQUEST" | "WEBVIEW_READY" | "SELECTED_MODEL";
+  command: "ABORT_REQUEST" | "WEBVIEW_READY";
   models?: any;
   provider: TypeProvider;
 }
+export interface SelectModelRequest {
+  command: "SELECTED_MODEL";
+  data: { model: AIModelData, type: "EXECUTOR" | "EMBEDDING" | "PLANNER" }
+}
 // Discriminated Union untuk gabungan semua message yang dikirim
-export type BackgroundMessage = ExecuteStepMessage | ExecuteTaskMessage | TextMessage | ExecuteOperationMessage | Provider | Request;
+export type BackgroundMessage = ExecuteStepMessage | ExecuteTaskMessage
+  | TextMessage | ExecuteOperationMessage | Provider | Request |
+  ExecuteOperationFailedMessage | SelectModelRequest;

@@ -11,7 +11,12 @@ export interface SearchResult {
     similarity: number;
 }
 
+
 export type StepType =
+    | "INSPECTION"
+    | "DATABASE"
+    | "BACKEND"
+    | "API"
     | "FRONTEND"
     | "DESIGN"
     | "INTEGRATION"
@@ -257,13 +262,13 @@ export interface Model {
 }
 
 
-export interface ResponseAI { 
-    text: string, 
+export interface ResponseAI {
+    text: string,
     totalTokens: { input: number; output: number }
 }
 export interface AgentAI {
     sendMessage(prompt: string, model: string, retry?: number, signal?: AbortSignal): Promise<ResponseAI>;
-    embedding(prompt: string, model: string, signal?: AbortSignal): Promise<number[]>;
+    embedding(prompt: string, model: string, signal?: AbortSignal, dimensions?: number): Promise<number[]>;
     countTokens(text: string): Promise<number>;
     getModels(): Promise<Model[]>
 }

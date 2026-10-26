@@ -1,6 +1,6 @@
 import { GoogleAgent } from "../agent/google";
 import OpenAIService from "../agent/openai";
-import type { AgentAI, ExecuteOperationMessage, ExecuteStepMessage, ExecuteTaskMessage, ExecuteTaskResult, Operation, OperationError, SearchRelevantCode, StatusTask, TextMessage, TypeProvider } from "../lib/types";
+import type { AgentAI, AIModelData, ExecuteOperationFailedMessage, ExecuteOperationMessage, ExecuteStepMessage, ExecuteTaskMessage, ExecuteTaskResult, Model, Operation, OperationError, SearchRelevantCode, StatusTask, TextMessage, TypeProvider } from "../lib/types";
 import vscode from "vscode";
 import ReceiveMessage from "../receiveMessage";
 import { Execute } from "../lib/execute";
@@ -10,10 +10,15 @@ import DatabaseSql from "../config";
 import EmbeddingService from "../lib/embeddings";
 import { ModelService } from "../model";
 import AnthropicAgent from "../agent/anthreopic";
+import { DocumentationService } from "../lib/documentation/documentation";
 
 
 
 export default class ActionService {
+    private agentPlan: { providerId: number, model: string, agent: AgentAI } | null = null;
+    private agentExecutor: { providerId: number, model: string, agent: AgentAI } | null = null;
+    private agentIndexing: { providerId: number, model: string, agent: AgentAI } | null = null;
+    private agentContextBuilder: { providerId: number, model: string, agent: AgentAI } | null = null;
     constructor(
         private readonly receiveMessage: ReceiveMessage,
         private readonly execute: Execute,
@@ -26,6 +31,9 @@ export default class ActionService {
         provider,
         apikey,
     }: { provider: "GEMINI" | "OPENAI" | "ANTHROPIC", apikey: string }) {
+        if (!provider) {
+            throw new Error("Provider tidak tersedia.");
+        }
         let agent: AgentAI;
         switch (provider) {
             case "GEMINI": {
@@ -81,29 +89,225 @@ export default class ActionService {
         }
     }
 
-    async readModels(webviewView: vscode.WebviewView, modelService: ModelService) {
-        for (const item of ['.gemini.json', '.openai.json', '.claude.json']) {
-            const models = await modelService.readModelConfig(item);
-            if (models) {
-                console.log(models);
-                this.receiveMessage.receiveModels(webviewView, models, "READ");
+    async readModels(webviewView: vscode.WebviewView) {
+        const models = await this.database.getModels();
+        this.receiveMessage.receiveModels(webviewView, models, "READ");
+
+        const modelEmbed = await this.database.getAgentConfig("EMBEDDING");
+        const modelPlan = await this.database.getAgentConfig("PLANNER");
+        const modelExecut = await this.database.getAgentConfig("EXECUTOR");
+        const modelContext = await this.database.getAgentConfig("CONTEXT_BUILDER");
+
+        const selected: {
+            indexing: AIModelData | null,
+            planning: AIModelData | null,
+            executor: AIModelData | null,
+            context: AIModelData | null
+        } = {
+            indexing: null,
+            planning: null,
+            executor: null,
+            context: null,
+        }
+
+        if (modelEmbed) {
+            const model = models.find(model => model.id === modelEmbed.model_id) ?? null;
+            if (model) {
+                selected.indexing = model;
+                const provider = await this.database.getProviderById(model.provider_id);
+                if (!provider || (provider && !provider.api_key)) {
+                    throw new Error("Model tidak tersedia!.");
+                }
+
+                const agent = await this.connectedProvider({
+                    provider: provider.provider as TypeProvider,
+                    apikey: provider.api_key || ""
+                });
+                this.agentIndexing = {
+                    providerId: provider.id || 1,
+                    agent: agent,
+                    model: model?.model_code,
+                }
+
+                // const embed = await agent.embedding("User", model.model_code);
+                // const res = await this.projectContext.getFileContent(agent, model.model_code, this.database, this.embedding, 'prisma/schema.prisma', 'model', '');
+
+                // Ubah setiap item Proxy menjadi objek biasa menggunakan spread operator (...)
+                // const cleanRes = res.map(r => ({ ...r }));
+
+                // console.log("Search: ", res);
+            }
+        }
+        if (modelExecut) {
+            const model = models.find(model => model.id === modelExecut.model_id) ?? null;
+            if (model) {
+                selected.executor = model;
+                const provider = await this.database.getProviderById(model.provider_id);
+                if (!provider || (provider && !provider.api_key)) {
+                    throw new Error("Model tidak tersedia!.");
+                }
+
+                const agent = await this.connectedProvider({
+                    provider: provider.provider as TypeProvider,
+                    apikey: provider.api_key || ""
+                });
+                this.agentExecutor = {
+                    providerId: provider.id || 1,
+                    agent: agent,
+                    model: model?.model_code,
+                }
+            }
+        }
+        if (modelPlan) {
+            const model = models.find(model => model.id === modelPlan.model_id) ?? null;
+            if (model) {
+                selected.planning = model;
+                const provider = await this.database.getProviderById(model.provider_id);
+                if (!provider || (provider && !provider.api_key)) {
+                    throw new Error("Model tidak tersedia!.");
+                }
+
+                const agent = await this.connectedProvider({
+                    provider: provider.provider as TypeProvider,
+                    apikey: provider.api_key || ""
+                });
+                this.agentPlan = {
+                    providerId: provider.id || 1,
+                    agent: agent,
+                    model: model?.model_code,
+                }
+            }
+        }
+        if (modelContext) {
+            console.log("Context: ", { ...modelContext });
+            const model = models.find(model => model.id === modelContext.model_id) ?? null;
+            if (model) {
+                selected.context = model;
+                const provider = await this.database.getProviderById(model.provider_id);
+                if (!provider || (provider && !provider.api_key)) {
+                    throw new Error("Model tidak tersedia!.");
+                }
+
+                const agent = await this.connectedProvider({
+                    provider: provider.provider as TypeProvider,
+                    apikey: provider.api_key || ""
+                });
+                this.agentContextBuilder = {
+                    providerId: provider.id || 1,
+                    agent: agent,
+                    model: model?.model_code,
+                }
+            }
+        }
+
+        this.receiveMessage.receiveMessageSelectedModel(webviewView, selected)
+    }
+
+    async selectedModel(data: { type: "EXECUTOR" | "EMBEDDING" | "PLANNER" | "CONTEXT_BUILDER", model: AIModelData }) {
+        console.log("Data select: ", data);
+        await this.database.saveAgentConfig({
+            agentType: data.type,
+            modelId: data.model.id || 0,
+            temperature: 0,
+            systemPrompt: ""
+        });
+
+        switch (data.type) {
+            case "EMBEDDING": {
+                const provider = await this.database.getProviderById(data.model?.provider_id);
+                if (!provider || (provider && !provider.api_key)) {
+                    throw new Error("Model tidak tersedia!.");
+                }
+
+                const agent = await this.connectedProvider({
+                    provider: provider.provider as TypeProvider,
+                    apikey: provider.api_key || ""
+                });
+                this.agentIndexing = {
+                    providerId: provider.id || 1,
+                    agent: agent,
+                    model: data.model?.model_code,
+                }
+            }
+            case "PLANNER": {
+                const provider = await this.database.getProviderById(data.model?.provider_id);
+                if (!provider || (provider && !provider.api_key)) {
+                    throw new Error("Model tidak tersedia!.");
+                }
+
+                const agent = await this.connectedProvider({
+                    provider: provider.provider as TypeProvider,
+                    apikey: provider.api_key || ""
+                });
+                this.agentPlan = {
+                    providerId: provider.id || 1,
+                    agent: agent,
+                    model: data.model?.model_code,
+                }
+            }
+            case "EXECUTOR": {
+                const provider = await this.database.getProviderById(data.model?.provider_id);
+                if (!provider || (provider && !provider.api_key)) {
+                    throw new Error("Model tidak tersedia!.");
+                }
+
+                const agent = await this.connectedProvider({
+                    provider: provider.provider as TypeProvider,
+                    apikey: provider.api_key || ""
+                });
+                this.agentExecutor = {
+                    providerId: provider.id || 1,
+                    agent: agent,
+                    model: data.model?.model_code,
+                }
+            }
+            case "CONTEXT_BUILDER": {
+                const provider = await this.database.getProviderById(data.model?.provider_id);
+                if (!provider || (provider && !provider.api_key)) {
+                    throw new Error("Model tidak tersedia!.");
+                }
+
+                const agent = await this.connectedProvider({
+                    provider: provider.provider as TypeProvider,
+                    apikey: provider.api_key || ""
+                });
+
+                this.agentContextBuilder = {
+                    providerId: provider.id || 1,
+                    agent: agent,
+                    model: data.model?.model_code,
+                }
             }
         }
     }
 
-    async saveModels(modelService: ModelService, provider: TypeProvider, data: any) {
-        const filename = provider === "OPENAI"
-            ? `.openai.json`
-            : provider === "GEMINI"
-                ? '.gemini.json'
-                : '.claude.json';
+    async saveModels(data: { provider: string; apikey: string; base_url?: string; models: Model[] }) {
+        if (!this.database) throw new Error("Database belum diinisialisasi.");
 
-        // Coba simpan ke file
-        try {
-            await modelService.saveModelConfig(filename, data);
-        } catch (fileErr) {
-            console.error(`Gagal menyimpan file ${filename}:`, fileErr);
+        const providerId = await this.database.createProvider({
+            provider: data.provider,
+            api_key: data.apikey,
+            base_url: data.base_url || '',
+            is_active: 1
+        });
+
+        const models: AIModelData[] = [];
+
+        for (const modelItem of data.models) {
+            const modelType: 'LLM' | 'EMBEDDING' = modelItem.isEmbedding ? 'EMBEDDING' : 'LLM';
+
+            const model = await this.database.createModel({
+                provider_id: providerId, // Menggunakan ID asli dari tabel ai_providers
+                provider_name: data.provider,
+                model_code: modelItem.code_name,
+                model_name: modelItem.name,
+                type: modelType,
+                max_tokens: 0,
+                is_default: (modelItem.selectedPlanning || modelItem.selectedExecutor || modelItem.selectedIndexing) ? 1 : 0
+            });
+            models.push(model)
         }
+        return models;
     }
     async getModels(provider: TypeProvider, apikey: string, webviewView: vscode.WebviewView, modelService: ModelService) {
         try {
@@ -116,155 +320,212 @@ export default class ActionService {
                 models
             };
 
-            await this.saveModels(modelService, provider, data);
+            const newModels = await this.saveModels(data);
 
             // Kirim tetap berjalan ke UI Webview
-            this.receiveMessage.receiveModels(webviewView, {
-                provider,
-                apikey,
-                models
-            }, "CREATE");
+            this.receiveMessage.receiveModels(webviewView, newModels, "CREATE");
+
+            if (provider === "GEMINI") {
+                await modelService.saveModelConfig('.embedding.json', { apikey, provider });
+            }
         } catch (err) {
             console.error("Gagal mengambil model:", err);
         }
     }
 
     async getPlanning(webviewView: vscode.WebviewView, data: TextMessage, signal?: AbortSignal) {
-        const agent = await this.connectedProvider({
-            provider: data.meta.provider,
-            apikey: data.meta.apikey
-        });
+        if (!this.agentPlan) return;
+
         //const analisis = await this.execute.getAnalisisTeckStack(agent, data.data.text, data.meta.model, signal);
         const projectContext = await this.execute.getProjectContext(true, "");
-        const planning = await this.execute.getPlanning(agent, data.meta.model, data.data.text, projectContext, signal);
+        const planning = await this.execute.getPlanning(this.agentPlan.agent, this.agentPlan.model, data.data.text, projectContext, signal);
 
         const planningId = uuid();
         this.receiveMessage.receivePlanning(webviewView, { ...planning, id: planningId, status: "IN_PROGRESS" });
     }
 
     async executeStep(webviewView: vscode.WebviewView, message: ExecuteStepMessage, signal?: AbortSignal) {
-        const agent = await this.connectedProvider({
-            provider: message.meta.provider,
-            apikey: message.meta.apikey
-        });
+        if (!this.agentPlan) return;
+
         const item = message.data;
+        const typeStep = item.type;
         console.log("Step Palnning: ", item.step);
+        try {
+            this.receiveMessage.receiveUpdateStep(webviewView, item.planningId, item.stepId, "IN_PROGRESS");
+            const projectContext = await this.execute.getProjectContext(true, "");
 
-        this.receiveMessage.receiveUpdateStep(webviewView, item.planningId, item.stepId, "IN_PROGRESS");
-        const projectContext = await this.execute.getProjectContext(true, "");
+            const subPlanning = await this.execute.getSubPlanning(
+                this.agentPlan.agent,
+                this.agentPlan.model,
+                projectContext,
+                item.goal,
+                item.step,
+                typeStep,
+                item.previousTasks,
+                item.nextTasks,
+                signal
+            );
 
-        const subPlanning = await this.execute.getSubPlanning(
-            agent,
-            message.meta.model,
-            projectContext,
-            item.goal,
-            item.step,
-            item.previousTasks,
-            item.nextTasks,
-            signal
-        );
-
-        this.receiveMessage.receiveNewTask(webviewView, item.planningId, item.stepId, subPlanning.tasks);
-        this.receiveMessage.receiveUpdateStep(webviewView, item.planningId, item.stepId, "DONE");
+            this.receiveMessage.receiveNewTask(webviewView, item.planningId, item.stepId, subPlanning.tasks);
+            this.receiveMessage.receiveUpdateStep(webviewView, item.planningId, item.stepId, "DONE");
+        } catch (err) {
+            this.receiveMessage.receiveUpdateStep(webviewView, item.planningId, item.stepId, "FAILED");
+            throw err;
+        }
     }
 
-    async executeTask(webviewView: vscode.WebviewView, message: ExecuteTaskMessage, signal?: AbortSignal) {
-        const agent = await this.connectedProvider({
-            provider: message.meta.provider,
-            apikey: message.meta.apikey
-        });
+    async executeTask(
+        webviewView: vscode.WebviewView,
+        message: ExecuteTaskMessage,
+        signal?: AbortSignal,
+        reason?: string,
+        retry = 3
+    ) {
+        if (!this.agentContextBuilder || !this.agentExecutor || !this.agentIndexing) return;
 
         const item = message.data;
-        this.receiveMessage.receiveUpdateTask(webviewView, message.data.planningId, item.stepId, item.taskId, "IN_PROGRESS");
+        const meta = message.meta;
+        const role = message.data.type;
+        const techStack = message?.techStack;
 
-        let projectContext = await this.execute.getProjectContext(true, "");
-
-        const historyTask = this.projectContext.buildExecutionHistoryContext(message.history);
-
-        let accumulatedContext: string[] = [];
+        let accumulatedContext: string[] = [...(item.result_search?.content ?? [])];
         let currentAccumulatedContext = "";
-        let historyQuery: string[] = [];
+        let historyQuery: string[] = [...(item.result_search?.history_query ?? [])];
         let refresh = 0;
         let isCompleted = false;
         let responseAgent: ExecuteTaskResult;
 
-        if (message.data.type === "SETUP") {
-            isCompleted = true;
-        }
+        try {
 
-        while (!isCompleted && refresh <= 7) {
+            this.receiveMessage.receiveUpdateTask(webviewView, message.data.planningId, item.stepId, item.taskId, "IN_PROGRESS", {
+                context: accumulatedContext,
+                history_query: historyQuery
+            });
 
-            const context = await this.execute.searchRelevantCode(
-                agent,
-                message.meta.model,
-                item.task,
-                projectContext,
-                historyQuery,
-                currentAccumulatedContext,
-                historyTask
-            );
+            let projectContext = await this.execute.getProjectContext(true, "");
 
-            if (context.status === "NEED_CONTEXT") {
-                const newRequests = context.information_requests || [];
+            const operationHistory = this.projectContext.buildExecutionHistoryContext(message.history);
 
-                // Filter request untuk memisahkan request baru dan request duplikat
-                const duplicateRequests: string[] = [];
-                const validRequests = newRequests.filter(req => {
-                    const reqKey = req.type === "FILE_CONTENT" ? `${req.path} ${req.query}` : req.reason;
 
-                    if (historyQuery.includes(reqKey)) {
-                        duplicateRequests.push(reqKey);
-                        return false;
-                    }
-
-                    historyQuery.push(reqKey);
-                    return true;
-                });
-
-                const newContext = await this.handleInformationRequest(
-                    agent,
-                    { ...context, information_requests: validRequests },
-                    this.database,
-                    this.embedding
-                );
-
-                currentAccumulatedContext = newContext;
-                accumulatedContext.push(newContext);
-            }
-
-            if (context.status === "READY") {
+            if (message.data.type === "SETUP") {
                 isCompleted = true;
             }
 
-            refresh += 1;
-        }
+            while (!isCompleted && refresh <= 5) {
 
-        console.log(accumulatedContext.join('\n'));
+                const context = await this.execute.searchRelevantCode(
+                    this.agentContextBuilder.agent,
+                    meta.model,
+                    reason ? reason : item.task,
+                    projectContext,
+                    historyQuery,
+                    currentAccumulatedContext,
+                );
 
-        if (message.data.type !== "SETUP") {
-            responseAgent = await this.execute.Execute(
-                agent,
-                message.meta.model,
-                item.task,
-                projectContext,
-                accumulatedContext,
-                (item.previousTasks ?? []).join('\n'),
-                (item.nextTasks ?? []).join('\n'),
-                signal
-            );
-        } else {
-            responseAgent = await this.execute.setupProject(agent, message.meta.model, message.data.task, projectContext, signal);
-        }
-        if (responseAgent.status === "READY" || responseAgent.status === "BLOCKED") {
-            const operations = responseAgent.operations.map((operation, index) => ({ ...operation, id: index + 1 }));
-            this.receiveMessage.receiveOperations(webviewView, message.data.planningId, item.stepId, item.taskId, operations);
-            this.receiveMessage.receiveUpdateTask(webviewView, message.data.planningId, item.stepId, item.taskId, "DONE");
-        } else {
-            console.error("Gagal menjalankan Task: ", responseAgent);
-            console.log(accumulatedContext);
-            this.receiveMessage.receiveUpdateTask(webviewView, message.data.planningId, item.stepId, item.taskId, "FAILED");
+                if (context.status === "NEED_CONTEXT") {
+                    const newRequests = context.information_requests || [];
+
+                    // Filter request untuk memisahkan request baru dan request duplikat
+                    const duplicateRequests: string[] = [];
+                    const validRequests = newRequests.filter(req => {
+                        let reqKey = '';
+
+                        if (req.type === "FILE_CONTENT") {
+                            reqKey = `path: ${req.path} search: ${req.query}`;
+                        } else if (req.type === "FULL_FILE") {
+                            reqKey = `FULL_FILE: ${req.path}`;
+                        } else if (req.type === "DOCUMENTATION") {
+                            reqKey = `DOCUMENTATION: ${req.library} search:${req.query}`;
+                        } else {
+                            reqKey = `${req.type}:${(req as any)?.query || ''}`;
+                        }
+
+                        if (historyQuery.includes(reqKey)) {
+                            duplicateRequests.push(reqKey);
+                            return false;
+                        }
+
+                        historyQuery.push(reqKey);
+                        return true;
+                    });
+
+                    const newContexts = await this.handleInformationRequest(
+                        { ...context, information_requests: validRequests },
+                        this.database,
+                        this.embedding
+                    );
+
+                    currentAccumulatedContext = newContexts.map(cntx => cntx.text).join('\n\n');
+                    newContexts.forEach((newContext) => {
+                        if (!accumulatedContext.includes(newContext?.text) && newContext.type !== "PROJECT_STRUCTURE"
+                            && newContext.type !== "DEPENDENCY_INFO") {
+                            accumulatedContext.push(newContext?.text);
+                        }
+                    })
+                }
+
+                if (context.status === "READY") {
+                    isCompleted = true;
+                }
+
+                refresh += 1;
+            }
+
+            console.log(accumulatedContext.join('\n'));
+
+            if (role !== "SETUP") {
+                responseAgent = await this.execute.Execute(
+                    this.agentExecutor.agent,
+                    role,
+                    message.meta.model,
+                    item.task,
+                    projectContext,
+                    accumulatedContext.join('\n\n'),
+                    (item.previousTasks ?? []).join('\n'),
+                    (item.nextTasks ?? []).join('\n'),
+                    operationHistory,
+                    signal
+                );
+            } else {
+                responseAgent = await this.execute.setupProject(this.agentExecutor.agent, message.meta.model, message.data.task, techStack, operationHistory, projectContext, signal);
+            }
+            if (responseAgent.status === "READY") {
+                console.log(responseAgent);
+                const operations = responseAgent.operations.map((operation, index) => ({ ...operation, id: index + 1 }));
+                this.receiveMessage.receiveOperations(webviewView, message.data.planningId, item.stepId, item.taskId, operations);
+                this.receiveMessage.receiveUpdateTask(webviewView, message.data.planningId, item.stepId, item.taskId, "DONE", {
+                    context: accumulatedContext,
+                    history_query: historyQuery
+                });
+            }
+            if (responseAgent.status === "BLOCKED") {
+                console.log("Blocked menjalankan Task: ", responseAgent);
+                if (retry <= 0) {
+                    this.receiveMessage.receiveUpdateTask(webviewView, message.data.planningId, item.stepId, item.taskId, "FAILED", {
+                        context: accumulatedContext,
+                        history_query: historyQuery
+                    });
+                    return
+                }
+                await this.executeTask(webviewView, {
+                    ...message, data: {
+                        ...message.data, result_search: {
+                            content: accumulatedContext,
+                            history_query: historyQuery
+                        }
+                    }
+                }, signal, responseAgent?.summary, retry - 1);
+            }
+        } catch (err) {
+            console.error(err);
+            this.receiveMessage.receiveUpdateTask(webviewView, message.data.planningId, item.stepId, item.taskId, "FAILED", {
+                context: accumulatedContext,
+                history_query: historyQuery
+            });
+            throw err;
         }
     }
+
     async executeOperation(webviewView: vscode.WebviewView, message: ExecuteOperationMessage, signal?: AbortSignal) {
 
         const item = message.data;
@@ -280,79 +541,186 @@ export default class ActionService {
             operation,
         );
 
+        const provider = await this.database.getProviderById(message.meta.providerId);
+        if (!provider || (provider && !provider.api_key)) {
+            throw new Error("Model tidak tersedia!.");
+        }
+
         const agent = await this.connectedProvider({
-            provider: message.meta.provider,
-            apikey: message.meta.apikey
+            provider: provider.provider as TypeProvider,
+            apikey: provider.api_key || ""
         });
+
 
         let isSuccess = false;
 
         try {
-            const result = await this.execute.executeResult(operation);
+            let result = await this.execute.executeResult(operation);
             isSuccess = result.success;
 
             console.log("Response Operation: ", result);
+
+            if (!result.success) {
+                const fileUri = this.getFileUri(operation.type === "MODIFY" ? operation.path : operation.type === "CREATE" ? operation.path : "");
+                await this.emebddingFile(fileUri);
+                result = await this.execute.executeResult(operation);
+            }
+
+            // Kirim hasil history
+            this.receiveMessage.receiveNewHistory(webviewView, result.operationResult);
+
+            if (!result.success && result.error && operation.type === "COMMAND") {
+                console.error("Error", result);
+                const projectContext = await this.execute.getProjectContext(true, "");
+                const isSuccessHandleError = await this.errorHandler(webviewView, item?.task, projectContext, result.error, operation);
+                if (isSuccessHandleError) {
+                    isSuccess = true;
+                }
+            }
+
+            // Update embedding jika sukses
+            if (isSuccess) {
+                await this.updateEmbedding(operation);
+            }
+
+            const finalStatus: StatusTask = isSuccess ? "DONE" : "FAILED";
+
+            this.receiveMessage.receiveUpdateOperation(
+                webviewView,
+                message.data.planningId,
+                item.stepId,
+                item.taskId,
+                finalStatus,
+                operation.id,
+                operation,
+                result.error
+            );
+
+        } catch (error) {
+            console.error("[ExecuteOperation] Crash/Unhandled Error:", error);
+            this.receiveMessage.receiveUpdateOperation(
+                webviewView,
+                message.data.planningId,
+                item.stepId,
+                item.taskId,
+                "FAILED",
+                operation.id,
+                operation,
+                error,
+            );
+            throw error;
+        }
+    }
+
+    async resloveError(webviewView: vscode.WebviewView, message: ExecuteOperationFailedMessage, signal?: AbortSignal) {
+        const item = message.data;
+        const operation = item.operation;
+
+        this.receiveMessage.receiveUpdateOperation(
+            webviewView,
+            message.data.planningId,
+            item.stepId,
+            item.taskId,
+            "IN_PROGRESS",
+            operation.id,
+            operation,
+        );
+
+        const provider = await this.database.getProviderById(message.meta.providerId);
+        if (!provider || (provider && !provider.api_key)) {
+            throw new Error("Model tidak tersedia!.");
+        }
+
+        const agent = await this.connectedProvider({
+            provider: provider.provider as TypeProvider,
+            apikey: provider.api_key || ""
+        });
+
+
+        let isSuccess = false;
+
+        try {
+            let result = await this.execute.executeResult(operation);
+            isSuccess = result.success;
+
             // Kirim hasil history
             this.receiveMessage.receiveNewHistory(webviewView, result.operationResult);
 
             if (!result.success && result.error) {
                 console.error("Error", result);
                 const projectContext = await this.execute.getProjectContext(true, "");
-                await this.errorHandler(webviewView, agent, message.meta.model, item.task, projectContext, result.error, operation);
+                const isSuccessHandleError = await this.errorHandler(webviewView, item?.task, projectContext, result.error, operation);
+                if (isSuccessHandleError) {
+                    isSuccess = true;
+                }
             }
 
-            // Update embedding jika sukses
             if (isSuccess) {
-                await this.updateEmbedding(agent, operation);
+                await this.updateEmbedding(operation);
             }
+
+            const finalStatus: StatusTask = isSuccess ? "DONE" : "FAILED";
+
+            this.receiveMessage.receiveUpdateOperation(
+                webviewView,
+                message.data.planningId,
+                item.stepId,
+                item.taskId,
+                finalStatus,
+                operation.id,
+                operation,
+                result.error
+            );
 
         } catch (error) {
             console.error("[ExecuteOperation] Crash/Unhandled Error:", error);
-        } finally {
-            const finalStatus: StatusTask = isSuccess ? "DONE" : "FAILED";
-            setTimeout(() => {
-                this.receiveMessage.receiveUpdateOperation(
-                    webviewView,
-                    message.data.planningId,
-                    item.stepId,
-                    item.taskId,
-                    finalStatus,
-                    operation.id,
-                    operation,
-                );
-            }, 500);
+            this.receiveMessage.receiveUpdateOperation(
+                webviewView,
+                message.data.planningId,
+                item.stepId,
+                item.taskId,
+                "FAILED",
+                operation.id,
+                operation,
+                error,
+            );
+            throw error;
         }
     }
+
     async errorHandler(
         webviewView: vscode.WebviewView,
-        agent: any,
-        model: string,
         task: string,
         projectContext: string,
         error: OperationError,
         operation: Operation,
         retry = 3,
+        result_search?: {
+            content: string[];
+            history_query: string[];
+        },
+        reason?: string,
     ) {
-        if (retry <= 0) throw error;
+        if (retry <= 0) return false;
+        if (!this.agentContextBuilder || !this.agentExecutor) throw new Error("Agent belum tersedia");
 
-        const contextFailed = operation.type === "COMMAND" ? operation.cwd : `${operation.path}(${operation.type})`;
+        const contextFailed = JSON.stringify(operation);
         let stopProcess = false;
         let refresh = 0;
-        let accumulatedContext = "";
         let currentAccumulatedContext = "";
-        let historyQuery: string[] = [];
+        let historyQuery: string[] = [...(result_search?.history_query ?? [])];
+
+        const accumulatedContext: string[] = [...(result_search?.content ?? [])];
 
         while (!stopProcess && refresh <= 5) {
             // Panggil Agent
-            const responseAgent = await this.execute.analisisError(
-                agent,
-                model,
-                task,
+            const responseAgent = await this.execute.searchRelevantCode(
+                this.agentContextBuilder.agent,
+                this.agentContextBuilder.model,
+                reason ? reason : JSON.stringify(error),
                 projectContext,
-                contextFailed,
-                error,
-                currentAccumulatedContext,
                 historyQuery,
+                currentAccumulatedContext,
             );
 
             if (responseAgent.status === "NEED_CONTEXT") {
@@ -360,7 +728,7 @@ export default class ActionService {
 
                 const duplicateRequests: string[] = [];
                 const validRequests = newRequests.filter(req => {
-                    const reqKey = req.type === "FILE_CONTENT" ? `${req.path} ${req.query}` : req.reason;
+                    const reqKey = req.type === "FILE_CONTENT" ? `${req.path} ${req.query}` : req.type !== "DOCUMENTATION" ? req.reason : req.library;
 
                     if (historyQuery.includes(reqKey)) {
                         duplicateRequests.push(reqKey);
@@ -375,15 +743,17 @@ export default class ActionService {
                     currentAccumulatedContext = `[SYSTEM WARNING]: Kamu meminta konteks yang sudah pernah diberikan sebelumnya (${duplicateRequests.join(', ')}). Harap gunakan informasi yang ada atau minta informasi lain yang belum ada di HISTORY.`;
                 } else {
                     // Jalankan request yang benar-benar baru
-                    const newContext = await this.handleInformationRequest(
-                        agent,
+                    const newContexts = await this.handleInformationRequest(
                         { ...responseAgent, information_requests: validRequests },
                         this.database,
                         this.embedding
                     );
 
-                    currentAccumulatedContext = newContext;
-                    accumulatedContext += `\n\n--- [CONTEXT REFRESH #${refresh}] ---\n` + newContext;
+                    newContexts.forEach((newContext) => {
+                        if (accumulatedContext.includes(newContext?.text) && newContext.type !== "PROJECT_STRUCTURE") {
+                            accumulatedContext.push(newContext?.text);
+                        }
+                    })
                 }
             }
 
@@ -395,25 +765,29 @@ export default class ActionService {
 
         console.log(accumulatedContext);
 
-        const errorHandler = await this.execute.errorHandler(agent, model, task, projectContext, contextFailed, error, accumulatedContext);
+        const errorHandler = await this.execute.errorHandler(this.agentExecutor.agent, this.agentExecutor.model, task, projectContext, contextFailed, error, accumulatedContext.join('\n\n'));
         if (errorHandler.status === "READY") {
             for (const op of errorHandler.operations) {
                 const execResult = await this.execute.executeResult(op);
 
                 this.receiveMessage.receiveNewHistory(webviewView, execResult.operationResult);
 
-                if (execResult.success) {
-                    await this.updateEmbedding(agent, op);
-                }
-                if (execResult.error) {
-                    this.errorHandler(webviewView, agent, model, task, projectContext, execResult.error, operation, retry - 1);
+                if (execResult.success || !execResult.error) {
+                    await this.updateEmbedding(op);
+                } else {
+                    this.errorHandler(webviewView, task, projectContext, execResult.error, operation, retry - 1);
                 }
             }
+        }
+        if (errorHandler.status === "BLOCKED") {
+            await this.errorHandler(webviewView, task, projectContext, error, operation, retry - 1, { content: accumulatedContext, history_query: historyQuery }, errorHandler.summary);
         }
 
         if (!stopProcess) {
             console.warn(`[ErrorHandler] Mencapai batas maksimum retry (${refresh}x). Proses dihentikan.`);
+            return false;
         }
+        return true;
     }
 
     getFileUri(path: string) {
@@ -426,69 +800,108 @@ export default class ActionService {
         return fileUri;
     }
 
-    async emebddingFile(agent: AgentAI, uri: vscode.Uri) {
+    async emebddingFile(uri: vscode.Uri) {
+        if (!this.agentIndexing) throw new Error("Indexing belum di setting nih.");
+        try {
+            const stat = await vscode.workspace.fs.stat(uri);
+
+            if (stat.type === vscode.FileType.Directory) {
+                console.warn(`[Embedding] Dilewati: '${uri.path}' adalah sebuah direktori, bukan file.`);
+                return;
+            }
+        } catch (error) {
+            console.error(`[Embedding] Gagal membaca status path: ${uri.path}`, error);
+            return;
+        }
+
         const document = await vscode.workspace.openTextDocument(uri);
 
         const text = document.getText();
         if (!text.trim()) return;
+
         const findPath = await this.database.getEmbeddingsByPath(uri.path);
         if (findPath) {
             await this.database.deleteEmbeddingsByPath(uri.path);
         }
-        const vectors = await this.embedding.embeddings(agent, text, uri.path);
+
+        const vectors = await this.embedding.embeddings(this.agentIndexing.agent, this.agentIndexing.model, text, uri.path);
         await this.database.saveEmbeddings(vectors);
     }
 
-    async updateEmbedding(agent: AgentAI, operation: Operation) {
+    async updateEmbedding(operation: Operation) {
         if (operation.type === "CREATE") {
             const fileUri = this.getFileUri(operation.path);
-            await this.emebddingFile(agent, fileUri);
+            await this.emebddingFile(fileUri);
         }
         if (operation.type === "MODIFY") {
             const fileUri = this.getFileUri(operation.path);
-            await this.emebddingFile(agent, fileUri);
+            await this.emebddingFile(fileUri);
         }
     }
 
-
-    async handleInformationRequest(agent: AgentAI, request: SearchRelevantCode, database: DatabaseSql, embedding: EmbeddingService): Promise<string> {
-        const contexts: string[] = [];
+    async handleInformationRequest(request: SearchRelevantCode, database: DatabaseSql, embedding: EmbeddingService) {
+        if (!this.agentIndexing) throw new Error("Indexing belum di setting nih.");
+        const contexts: { text: string, type: string }[] = [];
 
         for (const infoReq of request.information_requests) {
             switch (infoReq.type) {
                 case "PROJECT_STRUCTURE": {
-                    const res = await this.projectContext.getProjectStructure(infoReq.reason);
-                    contexts.push(res);
+                    const res = await this.projectContext.getProjectStructure(infoReq.reason, '.', true);
+                    contexts.push({ text: res, type: infoReq.type });
                     break;
                 }
 
                 case "SEMANTIC_SEARCH": {
-                    const res = await this.projectContext.getSemanticSearch(agent, infoReq.query, infoReq.reason, database, embedding);
-                    contexts.push(res);
+                    const uri = this.getFileUri('.');
+                    const res = await this.projectContext.getSemanticSearch(this.agentIndexing.agent, this.agentIndexing.model, infoReq.query, infoReq.reason, database, uri.path);
+                    contexts.push({ text: res, type: infoReq.type });
                     break;
                 }
 
                 case "FILE_CONTENT": {
-                    const res = await this.projectContext.getFileContent(agent, database, embedding, infoReq.path, infoReq.query, infoReq.reason);
-                    contexts.push(res);
+                    const res = await this.projectContext.getFileContent(this.agentIndexing.agent, this.agentIndexing.model, database, embedding, infoReq.path, infoReq.query, infoReq.reason);
+                    contexts.push({ text: res, type: infoReq.type });
+                    break;
+                }
+
+                case "FULL_FILE": {
+                    const res = await this.projectContext.getFullFileContent(infoReq.path, infoReq.reason);
+                    contexts.push({ text: res, type: infoReq.type });
                     break;
                 }
 
                 case "SYMBOL_SEARCH": {
                     const res = await this.projectContext.getSymbolSearch(infoReq.query, infoReq.reason);
-                    contexts.push(res);
+                    contexts.push({ text: res, type: infoReq.type });
                     break;
                 }
 
                 case "DEPENDENCY_INFO": {
                     const res = await this.projectContext.getDependencyInfo(infoReq.reason);
-                    contexts.push(res);
+                    contexts.push({ text: res, type: infoReq.type });
+                    break;
+                }
+
+                case "DOCUMENTATION": {
+                    const embeddingQuery = await this.embedding.embedding(this.agentIndexing.agent, this.agentIndexing.model, infoReq.query);
+                    const findDocumentation = await this.database.searchDocumentation(embeddingQuery, 2);
+                    if (findDocumentation.length > 0) {
+                        console.log("Search: ", findDocumentation);
+                        contexts.push(...findDocumentation.map(doc => ({ type: infoReq.type, text: doc?.content ?? "" })));
+                        break;
+                    }
+                    const documentation = new DocumentationService();
+                    const docs = await documentation.search(infoReq);
+                    console.log("Docs: ", docs);
+                    const embedding = await this.embedding.embedding(this.agentIndexing.agent, this.agentIndexing.model, docs.content);
+                    await this.database.saveDocumentation(docs, embedding);
+                    contexts.push({ type: infoReq.type, text: docs.content });
                     break;
                 }
             }
         }
 
-        return contexts.join('\n=========================================\n\n');
+        return contexts;
     }
 
 }

@@ -1,17 +1,12 @@
-import type { Database } from 'sql.js';
-import { AIModelData, AIProviderData, Embedding } from "../lib/types";
 import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as lancedb from '@lancedb/lancedb';
+import { AIModelData, AIProviderData, Embedding } from '../lib/types';
+import { DocumentationResult } from '../lib/types/documentation';
 
-if (typeof (globalThis as any).exports === 'undefined') {
-    (globalThis as any).exports = {};
-}
-
-const initSqlJs = require('sql.js');
-
-export default class DatabaseSql {
-    private db: Database | null = null;
+export default class DatabaseLance {
+    private db: lancedb.Connection | null = null;
     private dbPath: string = '';
 
     async init(context: vscode.ExtensionContext): Promise<void> {
@@ -21,272 +16,305 @@ export default class DatabaseSql {
         if (!fs.existsSync(storagePath)) {
             fs.mkdirSync(storagePath, { recursive: true });
         }
-        this.dbPath = path.join(storagePath, 'embeddings_data.db');
 
-        const wasmUri = vscode.Uri.joinPath(context.extensionUri, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm');
+        // LanceDB menyimpan data dalam bentuk direktori/folder, bukan file tunggal
+        this.dbPath = path.join(storagePath, 'lancedb_data');
 
-        const SQL = await initSqlJs({
-            locateFile: () => wasmUri.fsPath
-        });
+        // Hubungkan atau buat database LanceDB di folder globalStorage
+        this.db = await lancedb.connect(this.dbPath);
 
-        if (fs.existsSync(this.dbPath)) {
-            const fileBuffer = fs.readFileSync(this.dbPath);
-            this.db = new SQL.Database(fileBuffer);
-        } else {
-            this.db = new SQL.Database();
+        // Ambil daftar tabel yang sudah ada
+        const tableNames = await this.db.tableNames();
+
+        if (!tableNames.includes('embeddings')) {
+            // Membuat tabel awal dengan 1 baris dummy agar skema dan tipe vektor terdeteksi otomatis oleh LanceDB
+            await this.db.createTable('embeddings', [{
+                id: 0,
+                file_path: '',
+                chunk_index: 0,
+                start_line: 0,
+                end_line: 0,
+                hash: '',
+                language: '',
+                content: '',
+                vector: new Array(3072).fill(0), // Sesuaikan dimensi vektor Anda (misal 768 atau 1536)
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            }]);
+
+            // Hapus baris dummy pertama agar tabel kembali bersih
+            const table = await this.db.openTable('embeddings');
+            await table.delete('id = 0');
         }
 
-        // Aktifkan Foreign Keys di SQLite
-        this.db?.run(`PRAGMA foreign_keys = ON;`);
+        if (!tableNames.includes('ai_providers')) {
+            await this.db.createTable('ai_providers', [{
+                id: 0,
+                provider: '',
+                api_key: '',
+                base_url: '',
+                is_active: 1,
+                created_at: '',
+                updated_at: ''
+            }]);
+            const table = await this.db.openTable('ai_providers');
+            await table.delete('id = 0');
+        }
 
-        this.db?.run(`
-            CREATE TABLE IF NOT EXISTS embeddings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_path TEXT,
-                chunk_index INTEGER,
-                start_line INTEGER,
-                end_line INTEGER,
-                hash TEXT,
-                language TEXT,
-                content TEXT,
-                embedding TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
+        if (!tableNames.includes('ai_models')) {
+            await this.db.createTable('ai_models', [{
+                id: 0,
+                provider_id: 0,
+                provider_name: '',
+                model_code: '',
+                model_name: '',
+                type: 'LLM',
+                max_tokens: 0,
+                is_default: 0,
+                created_at: '',
+                updated_at: ''
+            }]);
+            const table = await this.db.openTable('ai_models');
+            await table.delete('id = 0');
+        }
 
-            CREATE TABLE IF NOT EXISTS ai_providers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                provider TEXT UNIQUE NOT NULL,
-                api_key TEXT,
-                base_url TEXT,
-                is_active INTEGER DEFAULT 1,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
+        if (!tableNames.includes('agent_configs')) {
+            await this.db.createTable('agent_configs', [{
+                id: 0,
+                agent_type: '',
+                model_id: 0,
+                temperature: 0.0,
+                system_prompt: '',
+                created_at: '',
+                updated_at: ''
+            }]);
+            const table = await this.db.openTable('agent_configs');
+            await table.delete('id = 0');
+        }
 
-            CREATE TABLE IF NOT EXISTS ai_models (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                provider_id INTEGER NOT NULL,
-                provider_name TEXT NOT NULL,
-                model_code TEXT UNIQUE NOT NULL,
-                model_name TEXT NOT NULL,
-                type TEXT DEFAULT 'LLM',
-                max_tokens INTEGER,
-                is_default INTEGER DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (provider_id) REFERENCES ai_providers (id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS agent_configs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                agent_type TEXT UNIQUE NOT NULL,
-                model_id INTEGER NOT NULL,
-                temperature REAL DEFAULT 0.2,
-                system_prompt TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (model_id) REFERENCES ai_models (id) ON DELETE CASCADE
-            );
-        `);
-
-        // Seed default config untuk PLANNER, EXECUTOR, dan EMBEDDING
-        this.db?.run(`
-            INSERT OR IGNORE INTO agent_configs (agent_type, model_id, temperature)
-            SELECT 'PLANNER', id, 0.2 FROM ai_models WHERE type = 'LLM' AND is_default = 1 LIMIT 1;
-
-            INSERT OR IGNORE INTO agent_configs (agent_type, model_id, temperature)
-            SELECT 'EXECUTOR', id, 0.4 FROM ai_models WHERE type = 'LLM' AND is_default = 1 LIMIT 1;
-
-            INSERT OR IGNORE INTO agent_configs (agent_type, model_id, temperature)
-            SELECT 'EMBEDDING', id, 0.0 FROM ai_models WHERE type = 'EMBEDDING' AND is_default = 1 LIMIT 1;
-        `);
-
-        this.saveToDisk();
-        console.log("✅ Database sql.js berhasil di-init dengan tabel providers & models!");
+        if (!tableNames.includes('documentation_cache')) {
+            await this.db.createTable('documentation_cache', [{
+                id: 0,
+                library: '',
+                version: '',
+                query: '',
+                content: '',
+                status: 'FOUND',
+                cached: true,
+                vector: new Array(3072).fill(0), // Sesuaikan dimensi vektor model Anda (misal 1536 atau 384)
+                created_at: '',
+                updated_at: ''
+            }]);
+            const table = await this.db.openTable('documentation_cache');
+            await table.delete('id = 0');
+        }
+        console.log("✅ Database LanceDB berhasil di-init!");
     }
 
-    private saveToDisk(): void {
-        if (!this.db) return;
-        const data = this.db.export();
-        const buffer = Buffer.from(data);
-        fs.writeFileSync(this.dbPath, buffer);
+    async saveDocumentation(doc: DocumentationResult, vector: number[]): Promise<void> {
+        if (!this.db) throw new Error("Database belum diinisialisasi");
+
+        const table = await this.db.openTable("documentation_cache");
+
+        const row = {
+            library: doc.library,
+            version: doc.version || "",
+            query: doc.query,
+            content: doc.content,
+            status: doc.status,
+            cached: doc.cached ? 1 : 0,
+            vector: vector, // Kolom vector untuk pencarian berbasis semantik/embedding di LanceDB
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        };
+
+        // Tambahkan data ke tabel documentation_cache secara batch/single array
+        await table.add([row]);
     }
+
+    async searchDocumentation(queryEmbedding: number[], limit: number = 3): Promise<any[]> {
+        if (!this.db) throw new Error("Database belum diinisialisasi");
+
+        try {
+            const table = await this.db.openTable("documentation_cache");
+
+            const results = await table.vectorSearch(queryEmbedding)
+                .limit(limit)
+                .toArray();
+
+            const validResults = results.filter((doc: any) => doc._distance === undefined || doc._distance <= 0.6);
+
+            return validResults;
+        } catch (error) {
+            console.error("Gagal melakukan pencarian dokumentasi:", error);
+            return [];
+        }
+    }
+
+    async clearEmbeddingsTable(): Promise<void> {
+        try {
+            if (!this.db) throw new Error("Database belum diinisialisasi");
+
+            const table = await this.db.openTable("embeddings");
+
+            // Menghapus semua baris di mana id bernilai angka berapa pun atau tidak null
+            await table.delete("id IS NOT NULL OR id IS NULL");
+
+            console.log("Semua isi tabel embeddings berhasil dihapus.");
+        } catch (error) {
+            console.error("Gagal menghapus isi tabel embeddings:", error);
+            throw error;
+        }
+    }
+
+    async searchEmbeddings(queryVector: number[], limit: number = 5, rootPath?: string) {
+        try {
+            if (!this.db) throw new Error("Database belum diinisialisasi");
+
+            const table = await this.db.openTable("embeddings");
+
+            let query = table.vectorSearch(queryVector).limit(limit);
+
+            if (rootPath) {
+                query = query.filter(`file_path LIKE '${rootPath}%'`);
+            }
+
+            const results = await query.toArray();
+
+            return results;
+        } catch (error) {
+            console.error('Gagal melakukan vector search dengan root path:', error);
+            throw error;
+        }
+    }
+
+
     async saveEmbeddings(vectors: Embedding[]): Promise<void> {
         if (!this.db) throw new Error("Database belum diinisialisasi");
 
-        const insertQuery = `
-            INSERT INTO embeddings (
-                file_path,
-                chunk_index,
-                start_line,
-                end_line,
-                hash,
-                language,
-                content,
-                embedding,
-                created_at,
-                updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now'), DATETIME('now'))
-        `;
+        const table = await this.db.openTable("embeddings");
 
-        this.db.run("BEGIN TRANSACTION");
-        try {
-            for (const item of vectors) {
-                this.db.run(insertQuery, [
-                    item.filePath,
-                    item.index,
-                    item.start,
-                    item.end,
-                    item.hash,
-                    item.language,
-                    item.content,
-                    JSON.stringify(item.embedding)
-                ]);
-            }
-            this.db.run("COMMIT");
-        } catch (error) {
-            this.db.run("ROLLBACK");
-            throw error;
-        }
+        // Format data agar sesuai dengan skema tabel embeddings di LanceDB
+        const rows = vectors.map(item => ({
+            file_path: item.filePath,
+            chunk_index: item.index,
+            start_line: item.start,
+            end_line: item.end,
+            hash: item.hash,
+            language: item.language,
+            content: item.content,
+            vector: item.embedding, // LanceDB menggunakan kolom bertipe vector (array float)
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        }));
 
-        this.saveToDisk();
+        // Tambahkan data ke tabel secara batch
+        await table.add(rows);
     }
 
     async getAllEmbeddings(): Promise<Embedding[]> {
         if (!this.db) throw new Error("Database belum diinisialisasi");
 
-        const res = this.db.exec(`
-            SELECT 
-                file_path,
-                chunk_index,
-                start_line,
-                end_line,
-                hash,
-                language,
-                content,
-                embedding
-            FROM embeddings
-        `);
+        const table = await this.db.openTable("embeddings");
 
-        if (res.length === 0) return [];
+        // Ambil seluruh data menggunakan .toArray()
+        const results = await table.query().toArray();
 
-        return res[0].values.map((row) => ({
-            filePath: row[0] as string,
-            index: row[1] as number,
-            start: row[2] as number,
-            end: row[3] as number,
-            hash: row[4] as string,
-            language: row[5] as string,
-            content: row[6] as string,
-            embedding: JSON.parse(row[7] as string) as number[],
-
+        return results.map((row: any) => ({
+            filePath: row.file_path as string,
+            index: row.chunk_index as number,
+            start: row.start_line as number,
+            end: row.end_line as number,
+            hash: row.hash as string,
+            language: row.language as string,
+            content: row.content as string,
+            embedding: row.vector as number[] // Langsung berupa array float
         }));
     }
 
     async getEmbeddingsByPath(filePath: string): Promise<Embedding[]> {
         if (!this.db) throw new Error("Database belum diinisialisasi");
 
-        const res = this.db.exec(`
-            SELECT 
-                file_path,
-                chunk_index,
-                start_line,
-                end_line,
-                hash,
-                language,
-                content,
-                embedding
-            FROM embeddings
-            WHERE file_path = ?
-        `, [filePath]);
+        const table = await this.db.openTable("embeddings");
 
-        if (res.length === 0) return [];
+        // Gunakan query dengan filter file_path
+        const results = await table
+            .query()
+            .where(`file_path = '${filePath.replace(/'/g, "''")}'`)
+            .toArray();
 
-        return res[0].values.map((row) => ({
-            filePath: row[0] as string,
-            index: row[1] as number,
-            start: row[2] as number,
-            end: row[3] as number,
-            hash: row[4] as string,
-            language: row[5] as string,
-            content: row[6] as string,
-            embedding: JSON.parse(row[7] as string) as number[]
+        return results.map((row: any) => ({
+            filePath: row.file_path as string,
+            index: row.chunk_index as number,
+            start: row.start_line as number,
+            end: row.end_line as number,
+            hash: row.hash as string,
+            language: row.language as string,
+            content: row.content as string,
+            embedding: row.vector as number[]
         }));
     }
 
     async deleteEmbeddingsByPath(filePath: string): Promise<void> {
         if (!this.db) throw new Error("Database belum diinisialisasi");
 
+        const table = await this.db.openTable("embeddings");
         const queryPath = filePath.includes('*') ? filePath.replace(/\*/g, '%') : filePath;
 
+        // LanceDB menggunakan method delete dengan SQL-like condition string
         if (queryPath.includes('%')) {
-            this.db.run(`DELETE FROM embeddings WHERE file_path LIKE ?`, [queryPath]);
+            // Ubah wildcard SQL 'LIKE' ke kondisi LanceDB
+            const cleanPath = queryPath.replace(/%/g, '');
+            await table.delete(`file_path LIKE '%${cleanPath}%'`);
         } else {
-            this.db.run(`DELETE FROM embeddings WHERE file_path = ?`, [queryPath]);
+            await table.delete(`file_path = '${queryPath.replace(/'/g, "''")}'`);
         }
 
-        this.saveToDisk();
-    }
-
-    async createProvider(data: AIProviderData): Promise<number> {
-        if (!this.db) throw new Error("Database belum di-inisialisasi.");
-
-        this.db.run(
-            `INSERT INTO ai_providers (provider, api_key, base_url, is_active) 
-             VALUES (?, ?, ?, ?);`,
-            [data.provider, data.api_key || '', data.base_url || '', data.is_active ?? 1]
-        );
-
-        this.saveToDisk();
-
-        // Ambil ID dari row yang baru dimasukkan
-        const result = this.db.exec("SELECT last_insert_rowid() as id;");
-        return result[0].values[0][0] as number;
     }
 
     async getProviders(): Promise<AIProviderData[]> {
         if (!this.db) throw new Error("Database belum di-inisialisasi.");
 
-        const res = this.db.exec("SELECT id, provider, api_key, base_url, is_active FROM ai_providers;");
-        if (res.length === 0) return [];
+        const table = await this.db.openTable("ai_providers");
+        const results = await table.query().toArray();
 
-        return res[0].values.map(row => ({
-            id: row[0] as number,
-            provider: row[1] as string,
-            api_key: row[2] as string,
-            base_url: row[3] as string,
-            is_active: row[4] as number
+        return results.map((row: any) => ({
+            id: row.id as number,
+            provider: row.provider as string,
+            api_key: row.api_key as string,
+            base_url: row.base_url as string,
+            is_active: row.is_active as number
         }));
     }
 
     async getProviderById(id: number): Promise<AIProviderData | null> {
         if (!this.db) throw new Error("Database belum di-inisialisasi.");
 
-        const stmt = this.db.prepare("SELECT id, provider, api_key, base_url, is_active FROM ai_providers WHERE id = ?;");
-        stmt.bind([id]);
+        const table = await this.db.openTable("ai_providers");
+        const results = await table
+            .query()
+            .where(`id = ${id}`)
+            .limit(1)
+            .toArray();
 
-        if (stmt.step()) {
-            const row = stmt.get();
-            stmt.free();
-            return {
-                id: row[0] as number,
-                provider: row[1] as string,
-                api_key: row[2] as string,
-                base_url: row[3] as string,
-                is_active: row[4] as number
-            };
-        }
+        if (results.length === 0) return null;
 
-        stmt.free();
-        return null;
+        const row: any = results[0];
+        return {
+            id: row.id as number,
+            provider: row.provider as string,
+            api_key: row.api_key as string,
+            base_url: row.base_url as string,
+            is_active: row.is_active as number
+        };
     }
 
     async deleteProvider(id: number): Promise<boolean> {
         if (!this.db) throw new Error("Database belum di-inisialisasi.");
 
-        this.db.run("DELETE FROM ai_providers WHERE id = ?;", [id]);
-        this.saveToDisk();
+        const table = await this.db.openTable("ai_providers");
+        await table.delete(`id = ${id}`);
+
         return true;
     }
 
@@ -294,107 +322,172 @@ export default class DatabaseSql {
     // AI MODELS METHODS
     // ==========================================
 
-    async createModel(data: AIModelData): Promise<number> {
+    async createModel(data: AIModelData) {
         if (!this.db) throw new Error("Database belum di-inisialisasi.");
 
-        this.db.run(
-            `INSERT INTO ai_models (provider_id, provider_name, model_code, model_name, type, max_tokens, is_default)
-             VALUES (?, ?, ?, ?, ?, ?, ?);`,
-            [
-                data.provider_id,
-                data.provider_name,
-                data.model_code,
-                data.model_name,
-                data.type || 'LLM',
-                data.max_tokens || null,
-                data.is_default ?? 0
-            ]
-        );
+        const table = await this.db.openTable("ai_models");
 
-        this.saveToDisk();
+        // Tentukan ID baru secara manual (misalnya menggunakan timestamp atau increment sederhana jika belum ada auto-increment di LanceDB)
+        const existingRows = await table.query().toArray();
+        const newId = existingRows.length > 0 ? Math.max(...existingRows.map((r: any) => r.id || 0)) + 1 : 1;
 
-        const result = this.db.exec("SELECT last_insert_rowid() as id;");
-        return result[0].values[0][0] as number;
+        const newRow = {
+            id: newId,
+            provider_id: data.provider_id,
+            provider_name: data.provider_name,
+            model_code: data.model_code,
+            model_name: data.model_name,
+            type: data.type || 'LLM',
+            max_tokens: data.max_tokens || undefined,
+            is_default: data.is_default ?? 0,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        };
+
+        await table.add([newRow]);
+        return newRow;
     }
 
     async getModels(providerId?: number): Promise<AIModelData[]> {
         if (!this.db) throw new Error("Database belum di-inisialisasi.");
 
-        const query = providerId
-            ? "SELECT id, provider_id, provider_name, model_code, model_name, type, max_tokens, is_default FROM ai_models WHERE provider_id = ?;"
-            : "SELECT id, provider_id, provider_name, model_code, model_name, type, max_tokens, is_default FROM ai_models;";
+        const table = await this.db.openTable("ai_models");
 
-        const params = providerId ? [providerId] : [];
-        const stmt = this.db.prepare(query);
-        stmt.bind(params);
-
-        const models: AIModelData[] = [];
-        while (stmt.step()) {
-            const row = stmt.get();
-            models.push({
-                id: row[0] as number,
-                provider_id: row[1] as number,
-                provider_name: row[2] as string,
-                model_code: row[3] as string,
-                model_name: row[4] as string,
-                type: row[5] as 'LLM' | 'EMBEDDING',
-                max_tokens: row[6] as number,
-                is_default: row[7] as number
-            });
+        let query = table.query();
+        if (providerId !== undefined) {
+            query = query.where(`provider_id = ${providerId}`);
         }
 
-        stmt.free();
-        return models;
+        const results = await query.toArray();
+
+        return results.map((row: any) => ({
+            id: row.id as number,
+            provider_id: row.provider_id as number,
+            provider_name: row.provider_name as string,
+            model_code: row.model_code as string,
+            model_name: row.model_name as string,
+            type: row.type as 'LLM' | 'EMBEDDING',
+            max_tokens: row.max_tokens as number,
+            is_default: row.is_default as number
+        }));
+    }
+
+    async getModelById(modelId: number): Promise<AIModelData | null> {
+        if (!this.db) throw new Error("Database belum di-inisialisasi.");
+
+        const table = await this.db.openTable("ai_models");
+
+        // Mencari data berdasarkan id model
+        const results = await table
+            .query()
+            .where(`id = ${modelId}`)
+            .limit(1)
+            .toArray();
+
+        if (!results || results.length === 0) {
+            return null;
+        }
+
+        const row = results[0] as any;
+
+        return {
+            id: row.id as number,
+            provider_id: row.provider_id as number,
+            provider_name: row.provider_name as string,
+            model_code: row.model_code as string,
+            model_name: row.model_name as string,
+            type: row.type as 'LLM' | 'EMBEDDING',
+            max_tokens: row.max_tokens as number,
+            is_default: row.is_default as number
+        };
     }
 
     async deleteModel(id: number): Promise<boolean> {
         if (!this.db) throw new Error("Database belum di-inisialisasi.");
 
-        this.db.run("DELETE FROM ai_models WHERE id = ?;", [id]);
-        this.saveToDisk();
+        const table = await this.db.openTable("ai_models");
+        await table.delete(`id = ${id}`);
+
         return true;
     }
 
-    async getAgentConfig(agentType: 'PLANNER' | 'EXECUTOR' | 'EMBEDDING') {
+    async saveAgentConfig(config: {
+        agentType: 'PLANNER' | 'EXECUTOR' | 'EMBEDDING' | 'CONTEXT_BUILDER';
+        modelId: number;
+        temperature: number;
+        systemPrompt: string;
+    }) {
+        try {
+            if (!this.db) throw new Error("Database belum diinisialisasi");
+
+            const table = await this.db.openTable('agent_configs');
+            const now = new Date().toISOString();
+
+            const existing = await table
+                .query()
+                .where(`agent_type = '${config.agentType}'`)
+                .toArray();
+
+            if (existing && existing.length > 0) {
+                await table.delete(`agent_type = '${config.agentType}'`);
+            }
+
+            await table.add([
+                {
+                    id: Date.now(), // Menggunakan timestamp unik sebagai ID
+                    agent_type: config.agentType,
+                    model_id: config.modelId,
+                    temperature: config.temperature,
+                    system_prompt: config.systemPrompt,
+                    created_at: existing && existing.length > 0 ? existing[0].created_at : now,
+                    updated_at: now
+                }
+            ]);
+
+            return { success: true, action: existing && existing.length > 0 ? 'UPDATED' : 'CREATED' };
+        } catch (error) {
+            console.error(`Gagal menyimpan konfigurasi agent ${config.agentType}:`, error);
+            throw error;
+        }
+    }
+
+    async getAgentConfig(agentType: 'PLANNER' | 'EXECUTOR' | 'EMBEDDING' | "CONTEXT_BUILDER") {
         if (!this.db) throw new Error("Database belum di-inisialisasi.");
 
-        const query = `
-            SELECT 
-                ac.agent_type,
-                ac.temperature,
-                ac.system_prompt,
-                am.model_code,
-                am.model_name,
-                am.type as model_type,
-                ap.provider,
-                ap.api_key,
-                ap.base_url
-            FROM agent_configs ac
-            JOIN ai_models am ON ac.model_id = am.id
-            JOIN ai_providers ap ON am.provider_id = ap.id
-            WHERE ac.agent_type = ? AND ap.is_active = 1;
-        `;
+        //  Ambil data agent_config berdasarkan agentType
+        const configTable = await this.db.openTable("agent_configs");
+        const configs = await configTable
+            .query()
+            .where(`agent_type = '${agentType}'`)
+            .limit(1)
+            .toArray();
 
-        const stmt = this.db.prepare(query);
-        stmt.bind([agentType]);
+        if (configs.length === 0) return null;
+        const config: any = configs[0];
 
-        if (stmt.step()) {
-            const row = stmt.get();
-            stmt.free();
-            return {
-                agentType: row[0] as string,
-                temperature: row[1] as number,
-                systemPrompt: row[2] as string,
-                modelCode: row[3] as string,
-                modelName: row[4] as string,
-                modelType: row[5] as string,
-                provider: row[6] as string,
-                apiKey: row[7] as string,
-                baseUrl: row[8] as string
-            };
-        }
+        return config;
+    }
 
-        stmt.free();
-        return null;
+    async createProvider(data: { provider: string; api_key: string; base_url?: string; is_active?: number }): Promise<number> {
+        if (!this.db) throw new Error("Database belum di-inisialisasi.");
+
+        const table = await this.db.openTable("ai_providers");
+
+        // Tentukan ID baru secara manual (mencari max ID yang ada)
+        const existingRows = await table.query().toArray();
+        const newId = existingRows.length > 0 ? Math.max(...existingRows.map((r: any) => r.id || 0)) + 1 : 1;
+
+        const newRow = {
+            id: newId,
+            provider: data.provider,
+            api_key: data.api_key,
+            base_url: data.base_url || '',
+            is_active: data.is_active ?? 1,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        };
+
+        await table.add([newRow]);
+        return newId; // Mengembalikan ID provider yang baru saja dibuat
     }
 }

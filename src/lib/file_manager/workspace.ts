@@ -1,13 +1,10 @@
 import * as vscode from 'vscode';
 import { exec } from 'child_process';
-import { promisify } from 'util';
 import * as path from 'path';
 import { CommandResult, FileOperationResult } from '../types';
 
-const execAsync = promisify(exec);
 
 export class WorkspaceFileManager {
-    private agentTerminal: vscode.Terminal | undefined;
 
     async createFile(filePath: string, content: string): Promise<FileOperationResult> {
         try {
@@ -83,7 +80,7 @@ export class WorkspaceFileManager {
     /**
      * Mengubah/mengganti teks spesifik di dalam file menggunakan WorkspaceEdit
      */
-    async modifyFile(filePath: string, search: string, replace: string): Promise<FileOperationResult> {
+    async modifyFileOld(filePath: string, search: string, replace: string): Promise<FileOperationResult> {
         try {
             const workspaceFolders = vscode.workspace.workspaceFolders;
             if (!workspaceFolders || workspaceFolders.length === 0) {
@@ -149,6 +146,225 @@ export class WorkspaceFileManager {
         }
     }
 
+    private normalizeWithOffsets(text: string): {
+        normalized: string;
+        offsets: number[];
+    } {
+        let normalized = "";
+        const offsets: number[] = [0];
+
+        for (let i = 0; i < text.length; i++) {
+            const char = text[i];
+
+            // CRLF -> LF
+            if (char === "\r" && text[i + 1] === "\n") {
+                normalized += "\n";
+                i++;
+            }
+
+            // Unicode spaces -> regular space
+            else if (/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/u.test(char)) {
+                normalized += " ";
+            }
+
+            // Tab tetap dipertahankan
+            else {
+                normalized += char;
+            }
+
+            offsets.push(i + 1);
+        }
+
+        return { normalized, offsets };
+    }
+
+    private findMatchRange(
+        document: vscode.TextDocument,
+        search: string
+    ): vscode.Range | null {
+        const originalText = document.getText();
+
+        // 1. Exact match
+        const exactIndex = originalText.indexOf(search);
+
+        if (exactIndex !== -1) {
+            const secondMatch = originalText.indexOf(
+                search,
+                exactIndex + 1
+            );
+
+            if (secondMatch !== -1) {
+                return null;
+            }
+
+            return new vscode.Range(
+                document.positionAt(exactIndex),
+                document.positionAt(exactIndex + search.length)
+            );
+        }
+
+        // 2. Normalized Unicode whitespace + line endings
+        const {
+            normalized: normalizedText,
+            offsets
+        } = this.normalizeWithOffsets(originalText);
+
+        const {
+            normalized: normalizedSearch
+        } = this.normalizeWithOffsets(search);
+
+        const index = normalizedText.indexOf(normalizedSearch);
+
+        if (index !== -1) {
+            const secondIndex = normalizedText.indexOf(
+                normalizedSearch,
+                index + 1
+            );
+
+            if (secondIndex !== -1) {
+                return null;
+            }
+
+            return new vscode.Range(
+                document.positionAt(offsets[index]),
+                document.positionAt(
+                    offsets[index + normalizedSearch.length]
+                )
+            );
+        }
+
+        // 3. Fallback: abaikan perbedaan indentasi
+        const searchLines = normalizedSearch.split("\n");
+
+        const documentLines = normalizedText.split("\n");
+
+        const matches: vscode.Range[] = [];
+
+        for (
+            let i = 0;
+            i <= documentLines.length - searchLines.length;
+            i++
+        ) {
+            let matched = true;
+
+            for (let j = 0; j < searchLines.length; j++) {
+                if (
+                    documentLines[i + j].trim() !==
+                    searchLines[j].trim()
+                ) {
+                    matched = false;
+                    break;
+                }
+            }
+
+            if (!matched) continue;
+
+            const startLine = i;
+
+            const endLine = i + searchLines.length - 1;
+
+            matches.push(
+                new vscode.Range(
+                    new vscode.Position(startLine, 0),
+                    new vscode.Position(
+                        endLine,
+                        document.lineAt(endLine).text.length
+                    )
+                )
+            );
+        }
+
+        return matches.length === 1 ? matches[0] : null;
+    }
+
+    async modifyFile(
+        filePath: string,
+        search: string,
+        replace: string
+    ): Promise<FileOperationResult> {
+        try {
+            const folders = vscode.workspace.workspaceFolders;
+
+            if (!folders?.length) {
+                return {
+                    success: false,
+                    message: "Workspace tidak ditemukan."
+                };
+            }
+
+            if (!search.trim()) {
+                return {
+                    success: false,
+                    message: "Search tidak boleh kosong."
+                };
+            }
+
+            const fileUri = vscode.Uri.joinPath(
+                folders[0].uri,
+                filePath
+            );
+
+            const document = await vscode.workspace.openTextDocument(fileUri);
+
+            const range = this.findMatchRange(document, search);
+
+            if (!range) {
+                return {
+                    success: false,
+                    message:
+                        `Search tidak ditemukan atau memiliki lebih ` +
+                        `dari satu kecocokan pada ${filePath}.`
+                };
+            }
+
+            const original = document.getText(range);
+
+            // Hindari operasi tanpa perubahan.
+            if (original === replace) {
+                return {
+                    success: true,
+                    message: `Tidak ada perubahan pada ${filePath}.`
+                };
+            }
+
+            const normalizedReplace = replace.replace(/\r\n/g, "\n");
+
+            const replacement = document.eol === vscode.EndOfLine.CRLF
+                ? normalizedReplace.replace(/\n/g, "\r\n")
+                : normalizedReplace;
+
+            const edit = new vscode.WorkspaceEdit();
+
+            edit.replace(fileUri, range, replacement);
+
+            const success = await vscode.workspace.applyEdit(edit);
+
+            if (!success) {
+                return {
+                    success: false,
+                    message: `Gagal menerapkan perubahan pada ${filePath}.`
+                };
+            }
+
+            const saved = await document.save();
+
+            return {
+                success: saved,
+                message: saved
+                    ? `Berhasil memperbarui ${filePath}.`
+                    : `Perubahan diterapkan tetapi gagal disimpan: ${filePath}.`
+            };
+
+        } catch (error: unknown) {
+            return {
+                success: false,
+                message: error instanceof Error
+                    ? error.message
+                    : String(error)
+            };
+        }
+    }
+
     async runCommand(command: string, cwd?: string): Promise<CommandResult> {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!workspaceFolder) {
@@ -163,8 +379,6 @@ export class WorkspaceFileManager {
         const executionCwd = cwd ? path.resolve(workspaceFolder, cwd) : workspaceFolder;
         const isWindows = process.platform === 'win32';
 
-        // Jika di Linux/Mac, bungkus command agar dijalankan via bash interactive/login shell
-        // Ini akan memaksa ~/.bashrc dimuat sehingga npx/npm/node terdeteksi!
         const finalCommand = isWindows
             ? command
             : `/bin/bash -ic "${command.replace(/"/g, '\\"')}"`;

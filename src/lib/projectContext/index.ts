@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import DatabaseSql from '../../config';
 import EmbeddingService from '../embeddings';
 import { AgentAI, OperationResult, TaskHistory } from '../types';
+import { DocumentationResult } from '../types/documentation';
 
 export default class ProjectContext {
     private async resolveRoot(providedRoot?: string): Promise<string> {
@@ -33,7 +34,7 @@ export default class ProjectContext {
 
         const files = await vscode.workspace.findFiles(
             '**/*',
-            '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**}',
+            '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/out/**,**/.next/**,**/.nuxt/**,**/.output/**,**/.svelte-kit/**,**/target/**,**/vendor/**,**/bin/**,**/obj/**,**/.gradle/**,**/.mvn/**,**/__pycache/**,**/.pytest_cache/**,**/.venv/**,**/venv/**,**/.claude/**,**/.agents/**,**/.windsurf/**,**/.turbo/**,**/.cache/**}',
             100
         );
 
@@ -47,27 +48,38 @@ export default class ProjectContext {
         return context;
     }
 
-    async getSemanticSearch(agent: AgentAI, query: string, reason: string, database: DatabaseSql, embedding: EmbeddingService): Promise<string> {
+    async getSemanticSearch(agent: AgentAI, model: string, query: string, reason: string, database: DatabaseSql, path: string): Promise<string> {
         try {
-            const embeddings = await database.getAllEmbeddings();
-            const searchResults = await embedding.searchQuery(agent, query, embeddings);
+            const embedQuery = await agent.embedding(query, model);
+            const searchResults = await database.searchEmbeddings(embedQuery, 5, path);
 
-            const topResults = Array.isArray(searchResults) ? searchResults.slice(0, 5) : [];
-            const formattedResults = topResults.map((res: any, idx: number) =>
-                `[Result #${idx + 1}] File: ${res.file_path || 'Unknown'} (Score: ${res.score?.toFixed(3) || 'N/A'})\nContent:\n${res.content}`
-            ).join('\n\n---\n\n');
+            console.log("Result semantic Search: ", searchResults);
+
+            const filteredResults = Array.isArray(searchResults)
+                ? searchResults.filter((res: any) => res._distance !== undefined && res._distance < 0.55)
+                : [];
+
+            // const topResults = filteredResults.slice(0, 7);
+
+            const formattedResults = filteredResults.map((res: any, idx: number) => {
+                const filePath = res.path || res.file_path || 'Unknown';
+                const distance = res._distance !== undefined ? res._distance.toFixed(3) : 'N/A';
+
+                return `[Result #${idx + 1}] File: ${filePath} (Distance: ${distance})\nContent:\n${res.content}`;
+            }).join('\n\n---\n\n');
 
             return `=== SEMANTIC SEARCH RESULTS ===\n` +
                 `Query: "${query}"\n` +
                 `Reason: ${reason}\n\n` +
                 `${formattedResults || 'No relevant vector match found.'}\n`;
         } catch (err) {
+            console.error(err);
             return `[Error in SEMANTIC_SEARCH: ${(err as Error).message}]`;
         }
     }
 
 
-    async getFileContent(agent: AgentAI, database: DatabaseSql, embedding: EmbeddingService, filePath: string, query: string, reason: string): Promise<string> {
+    async getFileContent(agent: AgentAI, model: string, database: DatabaseSql, embedding: EmbeddingService, filePath: string, query: string, reason: string): Promise<string> {
         try {
             const workspaceFolders = vscode.workspace.workspaceFolders;
             if (!workspaceFolders || workspaceFolders.length === 0) {
@@ -75,7 +87,6 @@ export default class ProjectContext {
             }
 
             const fileUri = vscode.Uri.joinPath(workspaceFolders[0].uri, filePath);
-
             const normalizedPath = fileUri.path.replace(/\\/g, '/');
 
             let embeddings = await database.getEmbeddingsByPath(normalizedPath);
@@ -85,35 +96,79 @@ export default class ProjectContext {
                 const content = Buffer.from(fileData).toString('utf-8');
 
                 if (!content.trim()) {
-                    return `=== FILE CONTENT: ${filePath} ===\nReason:${reason}\n\n[File is empty]\n`;
+                    return `=== FILE: ${filePath} ===\nReason: ${reason}\n\n[File is empty]\n`;
                 }
 
-                embeddings = await embedding.embeddings(agent, content, normalizedPath);
+                const generatedEmbeddings = await embedding.embeddings(agent, model, content, normalizedPath);
+
+                if (!generatedEmbeddings) {
+                    throw new Error("Layanan embedding gagal menghasilkan data (mengembalikan undefined)");
+                }
+
+                await database.saveEmbeddings(generatedEmbeddings);
+                embeddings = generatedEmbeddings;
             }
+
+            let targetChunks: any[] = [];
 
             if (!query || query.trim() === '') {
-                const defaultContent = embeddings
-                    .slice(0, 2)
-                    .map(item => `[Lines ${item.start}-${item.end}]\n\`\`\`\n${item.content}\n\`\`\``)
-                    .join('\n\n');
+                // Ambil beberapa chunk awal, pastikan hanya mengambil properti start, end, dan content
+                targetChunks = embeddings.slice(0, 5).map(item => ({
+                    start: item.start,
+                    end: item.end,
+                    content: item.content
+                }));
+            } else {
+                const embedQuery = await embedding.embedding(agent, query, model);
+                const searchQuery = await database.searchEmbeddings(embedQuery, 3, normalizedPath);
 
-                return `=== FILE CONTENT: ${filePath} ===\n` +
-                    `Reason: ${reason}\n\n` +
-                    `${defaultContent}\n`;
+                targetChunks = searchQuery.map((search: any) => ({
+                    start: search.start_line,
+                    end: search.end_line,
+                    content: search.content
+                }));
             }
 
-            const searchQuery = await embedding.searchQuery(agent, query.trim(), embeddings, 2);
+            targetChunks.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
 
-            const contentWithLines = searchQuery.map(search => {
-                const item = search.item;
-                return `[Lines ${item.start}-${item.end}]\n\`\`\`\n${item.content}\n\`\`\``;
-            }).join('\n\n');
+            // Format string yang bersih dan sederhana untuk Agent
+            const formattedContent = targetChunks
+                .map(item => JSON.stringify(item))
+                .join('\n\n');
+
+            return `=== FILE: ${filePath} ===\n` +
+                `Reason: ${reason}\n\n` +
+                `${formattedContent || '[No relevant file content found]'}\n`;
+
+        } catch (err) {
+            console.error("Error File Content: ", err);
+            return `[Error reading file ${filePath}: ${(err as Error).message}]`;
+        }
+    }
+
+    async getFullFileContent(filePath: string, reason: string): Promise<string> {
+        try {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (!workspaceFolders || workspaceFolders.length === 0) {
+                return `[Error reading file ${filePath}: No active workspace]`;
+            }
+
+            const fileUri = vscode.Uri.joinPath(workspaceFolders[0].uri, filePath);
+
+            const fileData = await vscode.workspace.fs.readFile(fileUri);
+            const content = Buffer.from(fileData).toString('utf-8');
+
+            if (!content.trim()) {
+                return `=== FILE CONTENT: ${filePath} ===\nReason:${reason}\n\n[File is empty]\n`;
+            }
+
 
             return `=== FILE CONTENT: ${filePath} ===\n` +
                 `Reason: ${reason}\n\n` +
-                `${contentWithLines}\n`;
+                `${content}\n`;
 
         } catch (err) {
+            console.error("Error File Content: ", err);
             return `[Error reading file ${filePath}: ${(err as Error).message}]`;
         }
     }
@@ -211,6 +266,10 @@ export default class ProjectContext {
         ).join('\n');
 
         return `=== RECENT EXECUTION HISTORY (Last ${recentOps.length} operations) ===\n${formattedHistory}`;
+    }
+
+    async saveDocumentation(documentation: DocumentationResult) {
+
     }
 
 }

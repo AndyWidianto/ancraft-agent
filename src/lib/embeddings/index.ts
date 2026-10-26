@@ -40,14 +40,19 @@ export default class EmbeddingService {
         return chunks;
     }
 
-    async embeddings(agent: AgentAI, text: string, path: string) {
+    async embedding(agent: AgentAI, text: string, model: string) {
+        const embedding = await agent.embedding(text, model);
+        return embedding;
+    }
+
+    async embeddings(agent: AgentAI, model: string, text: string, path: string) {
         const chunks = this.chunkText(text, path);
 
         const vectors = [];
 
         for (const chunk of chunks) {
             // panggil embedding model di sini
-            const embedding = await agent.embedding(chunk.content);
+            const embedding = await agent.embedding(chunk.content, model);
 
             if (embedding) {
                 vectors.push({
@@ -60,8 +65,8 @@ export default class EmbeddingService {
         return vectors;
     }
 
-    private async getSingleEmbedding(agent: AgentAI, text: string): Promise<number[]> {
-        const response = await agent.embedding(text);
+    private async getSingleEmbedding(agent: AgentAI, model: string, text: string): Promise<number[]> {
+        const response = await agent.embedding(text, model);
         return response;
     }
 
@@ -85,11 +90,12 @@ export default class EmbeddingService {
     // Mencari chunk paling relevan dari daftar DB berdasarkan query user
     async searchQuery(
         agent: AgentAI,
+        model: string,
         query: string,
         storedEmbeddings: Embedding[],
         topK = 5
     ): Promise<SearchResult[]> {
-        const queryVector = await this.getSingleEmbedding(agent, query);
+        const queryVector = await this.getSingleEmbedding(agent, model, query);
 
         if (!queryVector || queryVector.length === 0) {
             return [];
@@ -114,7 +120,7 @@ export default class EmbeddingService {
     }
 
 
-async emebddingFiles(agent: AgentAI, database: DatabaseSql) {
+async emebddingFiles(agent: AgentAI, model: string, database: DatabaseSql) {
     const includePattern =
         "**/*.{ts,tsx,js,jsx,mjs,cjs,vue,svelte,php,prisma,sql,py,go,java,kt,kts,cs,rb,rs,json,yaml,yml,toml,xml,graphql,gql,html,css,scss,sass,less,md}";
 
@@ -143,7 +149,7 @@ async emebddingFiles(agent: AgentAI, database: DatabaseSql) {
             console.log("Context: ", findPath);
             return;
         }
-        const vectors = await this.embeddings(agent, text, uri.path);
+        const vectors = await this.embeddings(agent, model, text, uri.path);
         await database.saveEmbeddings(vectors);
     }
 }
