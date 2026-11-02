@@ -30,7 +30,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 console.log("Chat User: ", data);
 
                 if (data.command === "WEBVIEW_READY") {
-                    console.log("An Craft sudah active nih..");
+                    console.log("An Craft sudah active....");
                     await this.action.readModels(webviewView);
 
                 }

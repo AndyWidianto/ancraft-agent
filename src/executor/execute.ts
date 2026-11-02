@@ -233,7 +233,8 @@ export class Execute {
 
         const totalInput = totalUsedToken.get("inputTokenExecutor") || 0;
         const totalOutput = totalUsedToken.get("outputTokenExecutor") || 0;
-
+        console.log("Input token executor: ", totalInput + response.totalTokens.input);
+        console.log("output token executor: ", totalOutput + response.totalTokens.output);
         totalUsedToken.set("inputTokenExecutor", totalInput + response.totalTokens.input)
         totalUsedToken.set("outputTokenExecutor", totalOutput + response.totalTokens.output);
 

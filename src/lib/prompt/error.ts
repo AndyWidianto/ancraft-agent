@@ -87,10 +87,10 @@ Never generate operations or invent code.
 RULES:
 - Analyze TASK, FAILED_OPERATION, ERROR, and available context.
 - Error logs and file paths are not source code.
-- Reuse RELEVANT_CODE and PREVIOUS_SEARCHES.
-- Never repeat searches unless existing results are stale or incomplete.
-- READY: Sufficient verified context exists to fix the error.
-- NEED_CONTEXT: Required code or information is missing.
+- **CRITICAL: Thoroughly inspect PREVIOUS_SEARCHES and RELEVANT_CODE first. If the information needed to resolve or analyze the error is already present in PREVIOUS_SEARCHES, you MUST NOT request it again and should lean towards READY or BLOCKED.**
+- Never repeat searches or request the same data twice unless existing results are explicitly proven stale or incomplete.
+- READY: Sufficient verified context (including what is already found in PREVIOUS_SEARCHES) exists to fix the error.
+- NEED_CONTEXT: Required code or information is genuinely missing and has NOT been searched/retrieved yet.
 - BLOCKED: Recovery is impossible even with additional context.
 - Multiple errors alone do not justify BLOCKED.
 - Never assume missing files, symbols, or dependencies exist.
@@ -100,9 +100,9 @@ CONTEXT REQUESTS:
 - FULL_FILE: Known path; only when partial code is insufficient.
 - SYMBOL_SEARCH: Locate symbols when the path is unknown.
 - DEPENDENCY_INFO: Retrieve missing dependency or version details.
-- Request only information necessary for recovery.
+- Request ONLY information strictly necessary for recovery that is missing from PREVIOUS_SEARCHES.
 - Prefer targeted searches before FULL_FILE.
-- Never request already sufficient context.
+- **Never request already sufficient or previously fetched context.** If previous searches already covered the scope, return an empty array [] for information_requests.
 
 REQUEST TYPES (for "information_requests"):
 - FULL_FILE: {"type": "FULL_FILE",  "path": "string", "reason": "string"}
@@ -119,9 +119,6 @@ ${failedOperation}
 
 ERROR:
 ${JSON.stringify(error)}
-
-RELEVANT_CODE:
-${relevantCode?.trim() || "[EMPTY]"}
 
 PREVIOUS_SEARCHES:
 ${previousSearches || "[]"}

@@ -8,6 +8,10 @@
   "engines": {
     "vscode": "^1.138.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AndyWidianto/ancraft-agent.git"
+  },
   "categories": [
     "Other"
   ],
