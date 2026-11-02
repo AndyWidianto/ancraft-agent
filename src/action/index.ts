@@ -1,9 +1,9 @@
 import { GoogleAgent } from "../agent/google";
 import OpenAIService from "../agent/openai";
-import type { AgentAI, AIModelData, ExecuteOperationFailedMessage, ExecuteOperationMessage, ExecuteStepMessage, ExecuteTaskMessage, ExecuteTaskResult, Model, Operation, OperationError, SearchRelevantCode, StatusTask, TextMessage, TypeProvider } from "../lib/types";
+import type { AgentAI, AIModelData, BuildTask, ExecuteOperationFailedMessage, ExecuteTaskResult, Model, Operation, OperationError, SearchRelevantCode, StatusTask, TextMessage, TypeProvider, UserMessage } from "../lib/types";
 import vscode from "vscode";
 import ReceiveMessage from "../receiveMessage";
-import { Execute } from "../lib/execute";
+import { Execute } from "../executor/execute";
 import ProjectContext from "../lib/projectContext";
 import { v4 as uuid } from "uuid";
 import DatabaseSql from "../config";
@@ -11,7 +11,7 @@ import EmbeddingService from "../lib/embeddings";
 import { ModelService } from "../model";
 import AnthropicAgent from "../agent/anthreopic";
 import { DocumentationService } from "../lib/documentation/documentation";
-
+import DeepSeekService from "../agent/deepsek";
 
 
 export default class ActionService {
@@ -30,7 +30,7 @@ export default class ActionService {
     async connectedProvider({
         provider,
         apikey,
-    }: { provider: "GEMINI" | "OPENAI" | "ANTHROPIC", apikey: string }) {
+    }: { provider: TypeProvider, apikey: string }) {
         if (!provider) {
             throw new Error("Provider tidak tersedia.");
         }
@@ -47,6 +47,9 @@ export default class ActionService {
             case "ANTHROPIC": {
                 agent = new AnthropicAgent(apikey);
                 break;
+            }
+            case "DEEPSEEK": {
+                agent = new DeepSeekService(apikey);
             }
         }
         return agent;
@@ -333,91 +336,45 @@ export default class ActionService {
         }
     }
 
-    async getPlanning(webviewView: vscode.WebviewView, data: TextMessage, signal?: AbortSignal) {
-        if (!this.agentPlan) return;
-
-        //const analisis = await this.execute.getAnalisisTeckStack(agent, data.data.text, data.meta.model, signal);
-        const projectContext = await this.execute.getProjectContext(true, "");
-        const planning = await this.execute.getPlanning(this.agentPlan.agent, this.agentPlan.model, data.data.text, projectContext, signal);
-
-        const planningId = uuid();
-        this.receiveMessage.receivePlanning(webviewView, { ...planning, id: planningId, status: "IN_PROGRESS" });
-    }
-
-    async executeStep(webviewView: vscode.WebviewView, message: ExecuteStepMessage, signal?: AbortSignal) {
-        if (!this.agentPlan) return;
-
-        const item = message.data;
-        const typeStep = item.type;
-        console.log("Step Palnning: ", item.step);
-        try {
-            this.receiveMessage.receiveUpdateStep(webviewView, item.planningId, item.stepId, "IN_PROGRESS");
-            const projectContext = await this.execute.getProjectContext(true, "");
-
-            const subPlanning = await this.execute.getSubPlanning(
-                this.agentPlan.agent,
-                this.agentPlan.model,
-                projectContext,
-                item.goal,
-                item.step,
-                typeStep,
-                item.previousTasks,
-                item.nextTasks,
-                signal
-            );
-
-            this.receiveMessage.receiveNewTask(webviewView, item.planningId, item.stepId, subPlanning.tasks);
-            this.receiveMessage.receiveUpdateStep(webviewView, item.planningId, item.stepId, "DONE");
-        } catch (err) {
-            this.receiveMessage.receiveUpdateStep(webviewView, item.planningId, item.stepId, "FAILED");
-            throw err;
-        }
-    }
-
     async executeTask(
         webviewView: vscode.WebviewView,
-        message: ExecuteTaskMessage,
+        projectContext: string,
+        task: BuildTask,
+        message: UserMessage,
         signal?: AbortSignal,
         reason?: string,
+        result_search?: {
+            context: string[],
+            history_query: string[]
+        },
         retry = 3
     ) {
-        if (!this.agentContextBuilder || !this.agentExecutor || !this.agentIndexing) return;
+        if (retry <= 0) throw new Error("Execute berhenti karena sudah melakukan refresh 3x.");
+        if (!this.agentContextBuilder || !this.agentPlan || !this.agentIndexing || !this.agentExecutor) return;
 
-        const item = message.data;
-        const meta = message.meta;
-        const role = message.data.type;
-        const techStack = message?.techStack;
+        if (!projectContext.trim()) {
+            projectContext = await this.execute.getProjectContext(true);
+        }
 
-        let accumulatedContext: string[] = [...(item.result_search?.content ?? [])];
+        let accumulatedContext: string[] = [...(result_search?.context ?? task.history?.context ?? [])];
         let currentAccumulatedContext = "";
-        let historyQuery: string[] = [...(item.result_search?.history_query ?? [])];
+        let historyQuery: string[] = [...(result_search?.history_query ?? task.history?.query ?? [])];
         let refresh = 0;
         let isCompleted = false;
-        let responseAgent: ExecuteTaskResult;
 
         try {
-
-            this.receiveMessage.receiveUpdateTask(webviewView, message.data.planningId, item.stepId, item.taskId, "IN_PROGRESS", {
-                context: accumulatedContext,
-                history_query: historyQuery
-            });
-
-            let projectContext = await this.execute.getProjectContext(true, "");
-
-            const operationHistory = this.projectContext.buildExecutionHistoryContext(message.history);
-
-
-            if (message.data.type === "SETUP") {
+            if (task.type === "SETUP") {
                 isCompleted = true;
             }
 
-            while (!isCompleted && refresh <= 5) {
+            const workspaceTree = await this.projectContext.getWorkspaceTree();
 
+            while (!isCompleted && refresh <= 5) {
                 const context = await this.execute.searchRelevantCode(
                     this.agentContextBuilder.agent,
-                    meta.model,
-                    reason ? reason : item.task,
-                    projectContext,
+                    this.agentContextBuilder.model,
+                    reason ? reason : task.task,
+                    workspaceTree,
                     historyQuery,
                     currentAccumulatedContext,
                 );
@@ -425,37 +382,14 @@ export default class ActionService {
                 if (context.status === "NEED_CONTEXT") {
                     const newRequests = context.information_requests || [];
 
-                    // Filter request untuk memisahkan request baru dan request duplikat
-                    const duplicateRequests: string[] = [];
-                    const validRequests = newRequests.filter(req => {
-                        let reqKey = '';
-
-                        if (req.type === "FILE_CONTENT") {
-                            reqKey = `path: ${req.path} search: ${req.query}`;
-                        } else if (req.type === "FULL_FILE") {
-                            reqKey = `FULL_FILE: ${req.path}`;
-                        } else if (req.type === "DOCUMENTATION") {
-                            reqKey = `DOCUMENTATION: ${req.library} search:${req.query}`;
-                        } else {
-                            reqKey = `${req.type}:${(req as any)?.query || ''}`;
-                        }
-
-                        if (historyQuery.includes(reqKey)) {
-                            duplicateRequests.push(reqKey);
-                            return false;
-                        }
-
-                        historyQuery.push(reqKey);
-                        return true;
-                    });
-
                     const newContexts = await this.handleInformationRequest(
-                        { ...context, information_requests: validRequests },
+                        { ...context, information_requests: newRequests },
                         this.database,
                         this.embedding
                     );
 
-                    currentAccumulatedContext = newContexts.map(cntx => cntx.text).join('\n\n');
+                    historyQuery.push(...newContexts.map(c => c.query));
+
                     newContexts.forEach((newContext) => {
                         if (!accumulatedContext.includes(newContext?.text) && newContext.type !== "PROJECT_STRUCTURE"
                             && newContext.type !== "DEPENDENCY_INFO") {
@@ -471,86 +405,113 @@ export default class ActionService {
                 refresh += 1;
             }
 
-            console.log(accumulatedContext.join('\n'));
+            let responseAgent: ExecuteTaskResult;
 
-            if (role !== "SETUP") {
+            if (task.type != "SETUP") {
                 responseAgent = await this.execute.Execute(
                     this.agentExecutor.agent,
-                    role,
-                    message.meta.model,
-                    item.task,
+                    this.agentExecutor.model,
+                    task.task,
+                    message.text,
                     projectContext,
                     accumulatedContext.join('\n\n'),
-                    (item.previousTasks ?? []).join('\n'),
-                    (item.nextTasks ?? []).join('\n'),
-                    operationHistory,
+                    "",
                     signal
                 );
             } else {
-                responseAgent = await this.execute.setupProject(this.agentExecutor.agent, message.meta.model, message.data.task, techStack, operationHistory, projectContext, signal);
+                responseAgent = await this.execute.setupProject(
+                    this.agentExecutor.agent,
+                    this.agentExecutor.model,
+                    task.task,
+                    projectContext
+                )
             }
+
             if (responseAgent.status === "READY") {
-                console.log(responseAgent);
-                const operations = responseAgent.operations.map((operation, index) => ({ ...operation, id: index + 1 }));
-                this.receiveMessage.receiveOperations(webviewView, message.data.planningId, item.stepId, item.taskId, operations);
-                this.receiveMessage.receiveUpdateTask(webviewView, message.data.planningId, item.stepId, item.taskId, "DONE", {
-                    context: accumulatedContext,
-                    history_query: historyQuery
-                });
+                webviewView.webview.postMessage({
+                    command: "RECEIVE_MESSAGE",
+                    action: "NEW_OPERATION",
+                    taskId: task.id,
+                    data: responseAgent.operations
+                })
+                for (const operation of responseAgent.operations) {
+                    await this.executeOperation(webviewView, operation, task, signal);
+                }
+                webviewView.webview.postMessage({
+                    command: "RECEIVE_MESSAGE",
+                    action: "UPDATE_TASK",
+                    data: {
+                        ...task,
+                        status: "DONE",
+                    },
+                    taskId: task.id
+                })
             }
             if (responseAgent.status === "BLOCKED") {
-                console.log("Blocked menjalankan Task: ", responseAgent);
-                if (retry <= 0) {
-                    this.receiveMessage.receiveUpdateTask(webviewView, message.data.planningId, item.stepId, item.taskId, "FAILED", {
-                        context: accumulatedContext,
-                        history_query: historyQuery
-                    });
-                    return
-                }
-                await this.executeTask(webviewView, {
-                    ...message, data: {
-                        ...message.data, result_search: {
-                            content: accumulatedContext,
-                            history_query: historyQuery
-                        }
-                    }
-                }, signal, responseAgent?.summary, retry - 1);
+                await this.executeTask(webviewView, projectContext, task, message, signal, responseAgent.summary, {
+                    context: accumulatedContext,
+                    history_query: historyQuery
+                }, retry - 1)
             }
         } catch (err) {
-            console.error(err);
-            this.receiveMessage.receiveUpdateTask(webviewView, message.data.planningId, item.stepId, item.taskId, "FAILED", {
-                context: accumulatedContext,
-                history_query: historyQuery
-            });
+            webviewView.webview.postMessage({
+                command: "RECEIVE_MESSAGE",
+                action: "UPDATE_TASK",
+                data: {
+                    ...task,
+                    history: {
+                        context: accumulatedContext,
+                        query: historyQuery
+                    }
+                },
+                taskId: task.id
+            })
             throw err;
         }
     }
 
-    async executeOperation(webviewView: vscode.WebviewView, message: ExecuteOperationMessage, signal?: AbortSignal) {
+    async buildTask(
+        webviewView: vscode.WebviewView,
+        message: UserMessage,
+        signal?: AbortSignal,
+        history?: string[],
+    ) {
+        if (!this.agentContextBuilder || !this.agentPlan || !this.agentIndexing || !this.agentExecutor) return;
 
-        const item = message.data;
-        const operation = item.operation;
+        const completedTasks: string[] = [...history ?? []]
+        let lastResult = "";
 
-        this.receiveMessage.receiveUpdateOperation(
-            webviewView,
-            message.data.planningId,
-            item.stepId,
-            item.taskId,
-            "IN_PROGRESS",
-            operation.id,
-            operation,
-        );
-
-        const provider = await this.database.getProviderById(message.meta.providerId);
-        if (!provider || (provider && !provider.api_key)) {
-            throw new Error("Model tidak tersedia!.");
+        try {
+            let projectContext = await this.execute.getProjectContext(true, "");
+            const task = await this.execute.buildTask(this.agentPlan.agent, this.agentPlan?.model, projectContext, {
+                text: message.text,
+                completedTasks,
+                lastResult,
+            })
+            const taskId = uuid();
+            webviewView.webview.postMessage({
+                command: "RECEIVE_MESSAGE",
+                action: "NEW_TASK",
+                data: {
+                    ...task,
+                    id: taskId
+                }
+            })
+            if (task.status === "DONE") {
+                this.execute.totalTokens();
+                webviewView.webview.postMessage({
+                    command: "RECEIVE_MESSAGE",
+                    action: "FINISH",
+                })
+            }
+        } catch (err) {
+            console.error(err);
+            throw err;
         }
+    }
 
-        const agent = await this.connectedProvider({
-            provider: provider.provider as TypeProvider,
-            apikey: provider.api_key || ""
-        });
-
+    async executeOperation(webviewView: vscode.WebviewView, operation: Operation, task: BuildTask, signal?: AbortSignal) {
+        if (!this.agentContextBuilder || !this.agentExecutor) throw new Error("Model belum di setting");
 
         let isSuccess = false;
 
@@ -569,10 +530,9 @@ export default class ActionService {
             // Kirim hasil history
             this.receiveMessage.receiveNewHistory(webviewView, result.operationResult);
 
-            if (!result.success && result.error && operation.type === "COMMAND") {
-                console.error("Error", result);
+            if (!result.success && result.error) {
                 const projectContext = await this.execute.getProjectContext(true, "");
-                const isSuccessHandleError = await this.errorHandler(webviewView, item?.task, projectContext, result.error, operation);
+                const isSuccessHandleError = await this.errorHandler(webviewView, task.task, projectContext, result.error, operation);
                 if (isSuccessHandleError) {
                     isSuccess = true;
                 }
@@ -582,59 +542,92 @@ export default class ActionService {
             if (isSuccess) {
                 await this.updateEmbedding(operation);
             }
-
-            const finalStatus: StatusTask = isSuccess ? "DONE" : "FAILED";
-
-            this.receiveMessage.receiveUpdateOperation(
-                webviewView,
-                message.data.planningId,
-                item.stepId,
-                item.taskId,
-                finalStatus,
-                operation.id,
-                operation,
-                result.error
-            );
-
         } catch (error) {
             console.error("[ExecuteOperation] Crash/Unhandled Error:", error);
-            this.receiveMessage.receiveUpdateOperation(
-                webviewView,
-                message.data.planningId,
-                item.stepId,
-                item.taskId,
-                "FAILED",
-                operation.id,
-                operation,
-                error,
-            );
             throw error;
         }
     }
 
+    // async executeOperation(webviewView: vscode.WebviewView, message: ExecuteOperationMessage, signal?: AbortSignal) {
+
+    //     const item = message.data;
+    //     const operation = item.operation;
+
+
+    //     const provider = await this.database.getProviderById(message.meta.providerId);
+    //     if (!provider || (provider && !provider.api_key)) {
+    //         throw new Error("Model tidak tersedia!.");
+    //     }
+
+    //     const agent = await this.connectedProvider({
+    //         provider: provider.provider as TypeProvider,
+    //         apikey: provider.api_key || ""
+    //     });
+
+
+    //     let isSuccess = false;
+
+    //     try {
+    //         let result = await this.execute.executeResult(operation);
+    //         isSuccess = result.success;
+
+    //         console.log("Response Operation: ", result);
+
+    //         if (!result.success) {
+    //             const fileUri = this.getFileUri(operation.type === "MODIFY" ? operation.path : operation.type === "CREATE" ? operation.path : "");
+    //             await this.emebddingFile(fileUri);
+    //             result = await this.execute.executeResult(operation);
+    //         }
+
+    //         // Kirim hasil history
+    //         this.receiveMessage.receiveNewHistory(webviewView, result.operationResult);
+
+    //         if (!result.success && result.error && operation.type === "COMMAND") {
+    //             console.error("Error", result);
+    //             const projectContext = await this.execute.getProjectContext(true, "");
+    //             const isSuccessHandleError = await this.errorHandler(webviewView, item?.task, projectContext, result.error, operation);
+    //             if (isSuccessHandleError) {
+    //                 isSuccess = true;
+    //             }
+    //         }
+
+    //         // Update embedding jika sukses
+    //         if (isSuccess) {
+    //             await this.updateEmbedding(operation);
+    //         }
+
+    //         const finalStatus: StatusTask = isSuccess ? "DONE" : "FAILED";
+
+    //         this.receiveMessage.receiveUpdateOperation(
+    //             webviewView,
+    //             message.data.planningId,
+    //             item.stepId,
+    //             item.taskId,
+    //             finalStatus,
+    //             operation.id,
+    //             operation,
+    //             result.error
+    //         );
+
+    //     } catch (error) {
+    //         console.error("[ExecuteOperation] Crash/Unhandled Error:", error);
+    //         this.receiveMessage.receiveUpdateOperation(
+    //             webviewView,
+    //             message.data.planningId,
+    //             item.stepId,
+    //             item.taskId,
+    //             "FAILED",
+    //             operation.id,
+    //             operation,
+    //             error,
+    //         );
+    //         throw error;
+    //     }
+    // }
+
     async resloveError(webviewView: vscode.WebviewView, message: ExecuteOperationFailedMessage, signal?: AbortSignal) {
         const item = message.data;
         const operation = item.operation;
-
-        this.receiveMessage.receiveUpdateOperation(
-            webviewView,
-            message.data.planningId,
-            item.stepId,
-            item.taskId,
-            "IN_PROGRESS",
-            operation.id,
-            operation,
-        );
-
-        const provider = await this.database.getProviderById(message.meta.providerId);
-        if (!provider || (provider && !provider.api_key)) {
-            throw new Error("Model tidak tersedia!.");
-        }
-
-        const agent = await this.connectedProvider({
-            provider: provider.provider as TypeProvider,
-            apikey: provider.api_key || ""
-        });
 
 
         let isSuccess = false;
@@ -642,9 +635,6 @@ export default class ActionService {
         try {
             let result = await this.execute.executeResult(operation);
             isSuccess = result.success;
-
-            // Kirim hasil history
-            this.receiveMessage.receiveNewHistory(webviewView, result.operationResult);
 
             if (!result.success && result.error) {
                 console.error("Error", result);
@@ -659,31 +649,9 @@ export default class ActionService {
                 await this.updateEmbedding(operation);
             }
 
-            const finalStatus: StatusTask = isSuccess ? "DONE" : "FAILED";
-
-            this.receiveMessage.receiveUpdateOperation(
-                webviewView,
-                message.data.planningId,
-                item.stepId,
-                item.taskId,
-                finalStatus,
-                operation.id,
-                operation,
-                result.error
-            );
 
         } catch (error) {
             console.error("[ExecuteOperation] Crash/Unhandled Error:", error);
-            this.receiveMessage.receiveUpdateOperation(
-                webviewView,
-                message.data.planningId,
-                item.stepId,
-                item.taskId,
-                "FAILED",
-                operation.id,
-                operation,
-                error,
-            );
             throw error;
         }
     }
@@ -712,49 +680,31 @@ export default class ActionService {
 
         const accumulatedContext: string[] = [...(result_search?.content ?? [])];
 
+        const workspaceTree = await this.projectContext.getWorkspaceTree();
+
         while (!stopProcess && refresh <= 5) {
-            // Panggil Agent
             const responseAgent = await this.execute.searchRelevantCode(
                 this.agentContextBuilder.agent,
                 this.agentContextBuilder.model,
                 reason ? reason : JSON.stringify(error),
-                projectContext,
+                workspaceTree,
                 historyQuery,
                 currentAccumulatedContext,
             );
 
             if (responseAgent.status === "NEED_CONTEXT") {
-                const newRequests = responseAgent.information_requests || [];
+                const newContexts = await this.handleInformationRequest(
+                    responseAgent,
+                    this.database,
+                    this.embedding
+                );
 
-                const duplicateRequests: string[] = [];
-                const validRequests = newRequests.filter(req => {
-                    const reqKey = req.type === "FILE_CONTENT" ? `${req.path} ${req.query}` : req.type !== "DOCUMENTATION" ? req.reason : req.library;
-
-                    if (historyQuery.includes(reqKey)) {
-                        duplicateRequests.push(reqKey);
-                        return false; // Jangan proses ulang
+                newContexts.forEach((newContext) => {
+                    if (accumulatedContext.includes(newContext?.text) && newContext.type !== "PROJECT_STRUCTURE") {
+                        accumulatedContext.push(newContext?.text);
                     }
-
-                    historyQuery.push(reqKey); // Catat ke history
-                    return true;
-                });
-
-                if (validRequests.length === 0 && duplicateRequests.length > 0) {
-                    currentAccumulatedContext = `[SYSTEM WARNING]: Kamu meminta konteks yang sudah pernah diberikan sebelumnya (${duplicateRequests.join(', ')}). Harap gunakan informasi yang ada atau minta informasi lain yang belum ada di HISTORY.`;
-                } else {
-                    // Jalankan request yang benar-benar baru
-                    const newContexts = await this.handleInformationRequest(
-                        { ...responseAgent, information_requests: validRequests },
-                        this.database,
-                        this.embedding
-                    );
-
-                    newContexts.forEach((newContext) => {
-                        if (accumulatedContext.includes(newContext?.text) && newContext.type !== "PROJECT_STRUCTURE") {
-                            accumulatedContext.push(newContext?.text);
-                        }
-                    })
-                }
+                    historyQuery.push(newContext.query);
+                })
             }
 
             if (responseAgent.status === "READY") {
@@ -762,8 +712,6 @@ export default class ActionService {
             }
             refresh += 1;
         }
-
-        console.log(accumulatedContext);
 
         const errorHandler = await this.execute.errorHandler(this.agentExecutor.agent, this.agentExecutor.model, task, projectContext, contextFailed, error, accumulatedContext.join('\n\n'));
         if (errorHandler.status === "READY") {
@@ -841,53 +789,58 @@ export default class ActionService {
 
     async handleInformationRequest(request: SearchRelevantCode, database: DatabaseSql, embedding: EmbeddingService) {
         if (!this.agentIndexing) throw new Error("Indexing belum di setting nih.");
-        const contexts: { text: string, type: string }[] = [];
+        const contexts: { text: string, type: string, query: string }[] = [];
 
         for (const infoReq of request.information_requests) {
             switch (infoReq.type) {
                 case "PROJECT_STRUCTURE": {
                     const res = await this.projectContext.getProjectStructure(infoReq.reason, '.', true);
-                    contexts.push({ text: res, type: infoReq.type });
+                    contexts.push({ text: res, type: infoReq.type, query: "PROJECT_STRUCTURE" });
                     break;
                 }
 
                 case "SEMANTIC_SEARCH": {
                     const uri = this.getFileUri('.');
                     const res = await this.projectContext.getSemanticSearch(this.agentIndexing.agent, this.agentIndexing.model, infoReq.query, infoReq.reason, database, uri.path);
-                    contexts.push({ text: res, type: infoReq.type });
+                    const query = `search: ${infoReq.query} (${res.isNotFound ? "NOT FOUND" : "FOUND"})`;
+                    contexts.push({ text: res.text, type: infoReq.type, query });
                     break;
                 }
 
                 case "FILE_CONTENT": {
                     const res = await this.projectContext.getFileContent(this.agentIndexing.agent, this.agentIndexing.model, database, embedding, infoReq.path, infoReq.query, infoReq.reason);
-                    contexts.push({ text: res, type: infoReq.type });
+                    const query = `path: ${infoReq.path} search: ${infoReq.query} (${res.isNotFound ? "NOT FOUND" : "FOUND"})`;
+                    contexts.push({ text: res.text, type: infoReq.type, query });
                     break;
                 }
 
                 case "FULL_FILE": {
                     const res = await this.projectContext.getFullFileContent(infoReq.path, infoReq.reason);
-                    contexts.push({ text: res, type: infoReq.type });
+                    const query = `path: ${infoReq.path} (${res.isNotFound ? "NOT FOUND" : "FOUND"})`;
+                    contexts.push({ text: res.text, type: infoReq.type, query });
                     break;
                 }
 
                 case "SYMBOL_SEARCH": {
                     const res = await this.projectContext.getSymbolSearch(infoReq.query, infoReq.reason);
-                    contexts.push({ text: res, type: infoReq.type });
+                    const query = `SYMBOL_SEARCH: ${infoReq.query} (${res.isNotFound ? "NOT FOUND" : "FOUND"})`;
+                    contexts.push({ text: res.text, type: infoReq.type, query });
                     break;
                 }
 
                 case "DEPENDENCY_INFO": {
                     const res = await this.projectContext.getDependencyInfo(infoReq.reason);
-                    contexts.push({ text: res, type: infoReq.type });
+                    const query = `${infoReq.type}: ${infoReq.reason}`;
+                    contexts.push({ text: res, type: infoReq.type, query });
                     break;
                 }
 
                 case "DOCUMENTATION": {
                     const embeddingQuery = await this.embedding.embedding(this.agentIndexing.agent, this.agentIndexing.model, infoReq.query);
                     const findDocumentation = await this.database.searchDocumentation(embeddingQuery, 2);
+                    const query = `${infoReq.library}: ${infoReq.query}`;
                     if (findDocumentation.length > 0) {
-                        console.log("Search: ", findDocumentation);
-                        contexts.push(...findDocumentation.map(doc => ({ type: infoReq.type, text: doc?.content ?? "" })));
+                        contexts.push(...findDocumentation.map(doc => ({ type: infoReq.type, text: doc?.content ?? "", query })));
                         break;
                     }
                     const documentation = new DocumentationService();
@@ -895,12 +848,11 @@ export default class ActionService {
                     console.log("Docs: ", docs);
                     const embedding = await this.embedding.embedding(this.agentIndexing.agent, this.agentIndexing.model, docs.content);
                     await this.database.saveDocumentation(docs, embedding);
-                    contexts.push({ type: infoReq.type, text: docs.content });
+                    contexts.push({ type: infoReq.type, text: docs.content, query });
                     break;
                 }
             }
         }
-
         return contexts;
     }
 

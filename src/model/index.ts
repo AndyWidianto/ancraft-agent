@@ -16,7 +16,6 @@ export class ModelService {
         }
     }
 
-    // 2. Baca File Konfigurasi dari mana saja
     async readModelConfig(filename: string) {
         try {
             const fileUri = vscode.Uri.joinPath(this.globalStorageUri, filename);

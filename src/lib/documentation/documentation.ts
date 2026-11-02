@@ -31,7 +31,7 @@ export class DocumentationService {
   private readonly cacheTTL = 1000 * 60 * 60;
 
   constructor(private readonly apiKey?: string) {
-    this.apiKey = "ctx7sk-4258bf85-081d-4613-9ddb-2449fc5c8d8d";
+    this.apiKey = "";
   }
 
   private async request<T>(

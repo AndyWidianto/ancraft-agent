@@ -23,10 +23,8 @@ export default function AgentInput({
   handleStop,
   isLoading,
   onSubmit,
-  autoApply,
   sendSelectedModel,
   setModel,
-  setAutoApply,
   models,
   getModels,
   loadingGetModels,
@@ -186,7 +184,7 @@ export default function AgentInput({
             </button>
 
             {/* Checkbox Auto Apply */}
-            <label className="flex items-center gap-1 cursor-pointer select-none text-[10px] text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-foreground)]">
+            {/* <label className="flex items-center gap-1 cursor-pointer select-none text-[10px] text-[var(--vscode-descriptionForeground)] hover:text-[var(--vscode-foreground)]">
               <input
                 type="checkbox"
                 checked={autoApply}
@@ -194,7 +192,7 @@ export default function AgentInput({
                 className="accent-[var(--vscode-button-background)] cursor-pointer rounded-sm"
               />
               <span>Auto Apply</span>
-            </label>
+            </label> */}
           </div>
 
           {!isLoading ? (
@@ -240,6 +238,7 @@ export default function AgentInput({
               >
                 <option value="GEMINI">AISTUDIO (Google)</option>
                 <option value="OPENAI">OPENAI</option>
+                <option value="DEEPSEEK">DEEPSEEK</option>
                 <option value="ANTHROPIC">ANTHROPIC (Claude)</option>
               </select>
             </div>

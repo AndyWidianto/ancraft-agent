@@ -2,8 +2,8 @@
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import { SidebarProvider } from './SidebarProvider';
-import { WorkspaceFileManager } from './lib/file_manager/workspace';
-import { Execute } from './lib/execute';
+import { WorkspaceFileManager } from './lib/fileManager/workspace';
+import { Execute } from './executor/execute';
 import DatabaseSql from './config';
 import EmbeddingService from './lib/embeddings';
 import ProjectContext from './lib/projectContext';
@@ -14,9 +14,6 @@ import { GoogleAgent } from './agent/google';
 
 
 export async function activate(context: vscode.ExtensionContext) {
-    const embeddingValid = new Map<"EmbeddingValid", boolean>();
-
-    // 1. Inisialisasi Core Services
     const fileManager = new WorkspaceFileManager();
     const projectContext = new ProjectContext();
     const execute = new Execute(fileManager, projectContext);

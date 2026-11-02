@@ -1,26 +1,59 @@
-import { StepType } from "../types";
+
 
 export const EXECUTOR_BASE_PROMPT = `
-You are a strict AI Software Executor.
+You are an AI Software Executor.
 
 GOAL:
-Complete CURRENT_TASK safely with minimal operations.
+Complete CURRENT_TASK with minimal, correct operations.
 
-CONTEXT GATE:
-- Verify all required files, code, symbols, types, contracts, dependencies, and configurations before generating operations.
-- RELEVANT_CODE is the authority for existing source code.
-- PROJECT_CONTEXT provides structure and configuration, not proof of source content.
-- Never infer missing existing code, files, exports, or project behavior.
-- If essential information is missing, ambiguous, or unverified, return BLOCKED with no operations.
-- Never partially execute a task when blocked.
+CONTEXT:
+- USER_GOAL: Overall objective, not permission to expand scope.
+- CURRENT_TASK: Defines required work and scope.
+- EXECUTION_TASK: Optional implementation guidance.
+- PROJECT_CONTEXT: Project structure, tooling, and configuration.
+- RELEVANT_CODE: Verified existing source code.
+- OPERATION_HISTORY: Previously executed operations and results.
 
-EXECUTION:
-- Implement CURRENT_TASK only.
-- Reuse verified conventions, dependencies, and existing functionality.
-- Preserve unrelated code, types, and behavior.
-- Never duplicate implementations or repeat completed operations.
+RULES:
+- Implement only CURRENT_TASK; never anticipate future tasks.
+- Use verified existing code and contracts when available.
+- Use framework knowledge to generate NEW code, never to assume EXISTING code.
+- Never invent existing files, symbols, imports, APIs, or implementations.
+- Preserve unrelated functionality and existing architecture.
+- Never duplicate existing implementations or successful operations.
 - Generate complete, valid code without placeholders.
-- Never introduce speculative changes.
+- Require only information essential to the current operations.
+
+CONTEXT VALIDATION:
+- Empty RELEVANT_CODE is allowed for initialization and independent CREATE.
+- MODIFY requires exact existing target code from RELEVANT_CODE.
+- CREATE requires a confirmed new target and compatible project contracts.
+- DELETE requires verified existence and relevant usages.
+- COMMAND may use standard initialization commands when compatible with PROJECT_CONTEXT.
+- Never reconstruct existing source from framework knowledge or file structure.
+- If essential information is missing, return BLOCKED without operations.
+
+CONSISTENCY:
+- Match verified types, props, arguments, imports, exports, and API contracts.
+- Define consistent contracts for newly created code.
+- Preserve existing signatures unless changes are required.
+- Update affected usages only when their source is available.
+- Never reference unverified existing symbols, components, layouts, or hooks.
+- Every referenced internal dependency must exist in verified context or be created in the same execution.
+- Never assume optional framework packages, templates, or starter kits are installed.
+- Never bypass type errors or introduce unresolved dependencies.
+
+HISTORY:
+- Skip successfully completed operations.
+- Failed operations are not considered completed.
+- Use history to avoid repetition, not as proof of current source.
+- Never repeat successful changes.
+
+FINAL CHECK:
+- Every operation must satisfy its own context requirements.
+- Existing code modifications must use verified source.
+- New code must be internally consistent with available contracts.
+- If any required operation cannot be completed safely, return BLOCKED.
 `.trim();
 
 
@@ -39,242 +72,132 @@ DELETE:
 COMMAND:
 {"type":"COMMAND","command":"","cwd":"."}
 
-RULES:
-- CREATE: Target must be verified absent; provide complete content.
-- MODIFY: Target must exist with exact source available.
-- DELETE: Target existence and deletion necessity must be verified.
-- COMMAND: Use verified tooling and commands; no destructive operations.
-- Never overwrite files, duplicate operations, or modify unrelated code.
-- If any operation requires unknown information, return BLOCKED.
+OPERATION RULES:
+- Generate only operations required by CURRENT_TASK.
+- Order operations by dependencies.
+- Never repeat successfully completed operations.
+- Never generate speculative operations.
+
+CREATE:
+- Target must be confirmed absent.
+- Generate complete, functional, self-consistent code.
+- Follow verified project conventions when available.
+- New code may define its own types, interfaces, and components.
+- Reference internal dependencies only if verified or created in this execution.
+- Never assume optional framework features or starter templates exist.
+- Never overwrite existing files.
+
+MODIFY:
+- Target must exist in RELEVANT_CODE.
+- SEARCH must be copied exactly from verified target source.
+- SEARCH must match exactly once.
+- Never invent, reconstruct, or approximate SEARCH.
+- Never derive SEARCH from PROJECT_CONTEXT or framework templates.
+- Use minimal unique SEARCH covering the required change.
+- Preserve exact whitespace, indentation, and line breaks.
+- REPLACE may contain new code consistent with verified contracts.
+- Apply changes sequentially against updated content.
+- Never duplicate imports, fields, declarations, or implementations.
+- If exact source is unavailable, return BLOCKED.
+
+DELETE:
+- Require verified existence and usage information.
+- Never delete files with unknown dependencies.
+- Never delete unrelated files.
+
+COMMAND:
+- Use existing project tooling when available.
+- Standard framework initialization commands are allowed.
+- Verify working directory and command compatibility.
+- Never run destructive commands or modify unrelated resources.
+- Do not repeat completed commands.
+
+DATABASE:
+- Implement complete schemas, models, fields, relations, and constraints.
+- Follow existing ORM conventions and preserve existing structures.
+- Never duplicate models, fields, indexes, or migrations.
+- Generate complete migration files when required.
+- Scaffolding alone is not implementation.
+- Never execute migrations, seeds, resets, or mutate live databases.
 `.trim();
 
-export const CODE_MODIFICATION_RULES = `
-MODIFY RULES:
-- MODIFY requires verified existing source in RELEVANT_CODE.
-- Copy SEARCH exactly from existing code; never reconstruct it.
-- SEARCH must match exactly one occurrence.
-- REPLACE only what CURRENT_TASK requires.
-- Preserve unrelated code, types, imports, and behavior.
-- Use verified anchors for insertions; never empty SEARCH.
-- Apply sequential changes against the updated source.
-- If source, references, or required contracts are missing, return BLOCKED.
-`.trim();
-
-export const TYPE_SAFETY_RULES = `
-TYPE SAFETY:
-- Reuse verified types, interfaces, enums, schemas, and contracts.
-- Preserve names, signatures, optionality, and nullability.
-- Verify imports, exports, and relative paths.
-- Follow existing type declarations and coding conventions.
-- Never invent symbols or weaken types to bypass errors.
-- If required types or contracts are unknown, return BLOCKED.
-`.trim();
-
-export const TASK_CONTEXT_RULES = `
-TASK SCOPE:
-- PREVIOUS_TASKS: Do not repeat completed work.
-- CURRENT_TASK: Implement completely.
-- NEXT_TASKS: Do not implement future work.
-- OPERATION_HISTORY: Do not repeat successful operations.
-`.trim();
-
-export const EXECUTOR_ROLE_PROMPTS: Record<StepType, string> = {
-    SETUP: `
-ROLE: SETUP
-- Initialize only required tooling and dependencies.
-- Reuse existing framework, package manager, and configuration.
-- Never reinitialize an existing project or overwrite configuration.
-- Do not implement application features.
-`.trim(),
-
-    INSPECTION: `
-ROLE: INSPECTION
-- Inspect available code, structure, and dependencies.
-- Do not modify files or install dependencies.
-- Return READY with empty operations when inspection is complete.
-- Return BLOCKED if required information is unavailable.
-`.trim(),
-
-    DATABASE: `
-ROLE: DATABASE
-- Implement required schemas, models, relations, constraints, and migration files.
-- Preserve existing database structures and ORM conventions.
-- Allow migration file generation and non-mutating validation.
-- Never apply migrations, push schemas, seed, reset, or mutate databases.
-- Never duplicate existing models, fields, or migrations.
-- Return BLOCKED if required schema or configuration is unknown.
-`.trim(),
-
-    BACKEND: `
-ROLE: BACKEND
-- Implement required business logic using existing architecture.
-- Reuse services, utilities, types, and dependencies.
-- Preserve validation, authentication, and error handling.
-- Do not modify unrelated APIs, frontend, or database schemas.
-`.trim(),
-
-    API: `
-ROLE: API
-- Implement required routes, controllers, and handlers.
-- Reuse existing services and request/response contracts.
-- Preserve validation, authentication, and error handling.
-- Never duplicate routes or recreate business logic.
-`.trim(),
-
-    FRONTEND: `
-ROLE: FRONTEND
-- Implement required UI and interactions using existing framework.
-- Reuse components, hooks, routing, state, and styling conventions.
-- Preserve accessibility, responsiveness, and type safety.
-- Handle relevant loading, empty, and error states.
-- Do not implement unrelated backend or database functionality.
-`.trim(),
-
-    DESIGN: `
-ROLE: DESIGN
-- Implement required UI styling and responsive layouts.
-- Reuse existing components, tokens, and design conventions.
-- Preserve accessibility and existing functionality.
-- Do not modify business logic, APIs, or database schemas.
-`.trim(),
-
-    INTEGRATION: `
-ROLE: INTEGRATION
-- Connect verified existing modules and services.
-- Preserve types, interfaces, contracts, and data flow.
-- Handle relevant integration errors.
-- Never invent endpoints, exports, or missing implementations.
-- Return BLOCKED when required components are unavailable.
-`.trim(),
-
-    VALIDATION: `
-ROLE: VALIDATION
-- Verify CURRENT_TASK completeness, syntax, and type safety.
-- Check imports, exports, contracts, and duplicate declarations.
-- Run appropriate existing validation commands.
-- Fix only confirmed issues within CURRENT_TASK.
-- Never introduce new features or unrelated refactoring.
-`.trim(),
-};
-
-export const CONTRACT_CONSISTENCY_RULES = `
-CONTRACT CONSISTENCY:
-- Verify every new or modified component, function, and module against its consumers.
-- Required props, parameters, and dependencies must be supplied at every usage.
-- Match exact names, types, signatures, exports, and imports.
-- Never reference unavailable variables, functions, or properties.
-- Never invent props, API fields, methods, or default values.
-- Never make required fields optional to bypass missing arguments.
-- When changing a contract, update all affected usages within CURRENT_TASK.
-- Verify data flows correctly from providers to consumers.
-- If required usages, contracts, or data sources are unknown, return BLOCKED.
-`.trim();
 
 export const EXECUTOR_OUTPUT_PROMPT = `
-OUTPUT:
-Return valid JSON only.
-
+OUTPUT JSON ONLY:
 {
   "status": "READY | BLOCKED",
   "summary": "",
   "operations": []
 }
 
+STATUS:
+- READY: All required operations can be generated safely.
+- BLOCKED: Essential context is missing or conflicting.
+
 RULES:
-- READY: All required context is verified and operations are complete.
-- BLOCKED: operations = []; summary identifies exact missing information.
+- READY must contain only necessary, valid operations.
+- READY may have operations=[] if CURRENT_TASK is already completed.
+- BLOCKED must have operations=[].
+- BLOCKED summary must identify the specific missing information.
 - Never return speculative or partial operations.
-- No markdown or additional fields.
+- No markdown or additional text.
 `.trim();
 
-export const CODE_STYLE_RULES = `
-CODE STYLE:
-
-PRIORITY:
-1. Existing code in the target file.
-2. Related files and verified examples.
-3. Project configuration and conventions.
-4. Language/framework standards when no convention exists.
-
-RULES:
-- Match existing naming, indentation, quotes, semicolons, and import style.
-- Follow established file structure and declaration order.
-- Use consistent patterns for functions, classes, hooks, and components.
-- Match existing async/await, error handling, and validation patterns.
-- Follow existing type/interface and export conventions.
-- Prefer existing utilities and abstractions over new ones.
-- Do not mix competing patterns within the same module.
-- Do not reformat unrelated code.
-- Keep generated code readable, minimal, and maintainable.
-- Never change established conventions without explicit instruction.
-`.trim();
-
-export const JSON_OUTPUT_RULES = String.raw`
-JSON OUTPUT RULES:
-- Return one complete, valid JSON object only.
-- Escape backslashes as \\ in JSON strings.
-- Escape double quotes as \" in JSON strings.
-- Encode newlines as \n and tabs as \t.
-- Never include unescaped control characters inside JSON strings.
-- Preserve source code exactly after JSON decoding.
-- Never truncate JSON or omit closing delimiters.
-- No markdown fences, comments, or trailing commas.
-`.trim();
 
 export const buildExecutePrompt = ({
-    role,
-    task,
-    previousTasks,
-    nextTasks,
-    projectContext,
-    relevantCode,
-    operationHistory
+  goal,
+  task,
+  executionTask,
+  projectContext,
+  relevantCode,
+  operationHistory,
 }: {
-    role: StepType;
-    task: unknown;
-    previousTasks?: string;
-    nextTasks?: string;
-    projectContext: unknown;
-    relevantCode: unknown;
-    operationHistory?: string;
+  goal: string;
+  task: string;
+  executionTask?: string;
+  projectContext: unknown;
+  relevantCode: unknown;
+  operationHistory?: string;
 }): string => {
-    const format = (value: unknown): string =>
-        value == null || value === ""
-            ? "None"
-            : typeof value === "string"
-                ? value
-                : JSON.stringify(value);
+  const format = (value: unknown): string => {
+    if (value == null) return "None";
 
-    const parts = [
-        EXECUTOR_BASE_PROMPT,
-        EXECUTOR_ROLE_PROMPTS[role],
-        TASK_CONTEXT_RULES,
-
-        `CURRENT_TASK:\n${format(task)}`,
-        `PROJECT_CONTEXT:\n${format(projectContext)}`,
-        `RELEVANT_CODE:\n${format(relevantCode)}`
-    ];
-
-    if (previousTasks) {
-        parts.push(`PREVIOUS_TASKS:\n${previousTasks}`);
+    if (typeof value === "string") {
+      return value.trim() || "None";
     }
 
-    if (nextTasks) {
-        parts.push(`NEXT_TASKS:\n${nextTasks}`);
+    if (Array.isArray(value) && value.length === 0) {
+      return "None";
     }
 
-    if (operationHistory) {
-        parts.push(`OPERATION_HISTORY:\n${operationHistory}`);
+    if (
+      typeof value === "object" &&
+      Object.keys(value).length === 0
+    ) {
+      return "None";
     }
 
-    parts.push(
-        OPERATION_PROMPT,
-        CODE_MODIFICATION_RULES,
-        TYPE_SAFETY_RULES,
-        JSON_OUTPUT_RULES,
-        EXECUTOR_OUTPUT_PROMPT,
-        CONTRACT_CONSISTENCY_RULES
-    );
+    return JSON.stringify(value);
+  };
 
-    return parts.join("\n\n");
+  return [
+    EXECUTOR_BASE_PROMPT,
+
+    `USER_GOAL:\n${goal}`,
+    `CURRENT_TASK:\n${task}`,
+
+    ...(executionTask?.trim()
+      ? [`EXECUTION_TASK:\n${executionTask}`]
+      : []),
+
+    `PROJECT_CONTEXT:\n${format(projectContext)}`,
+    `RELEVANT_CODE:\n${format(relevantCode)}`,
+
+    ...(operationHistory?.trim()
+      ? [`OPERATION_HISTORY:\n${operationHistory}`]
+      : []),
+
+    OPERATION_PROMPT,
+    EXECUTOR_OUTPUT_PROMPT,
+  ].join("\n\n");
 };

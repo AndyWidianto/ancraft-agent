@@ -30,8 +30,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 console.log("Chat User: ", data);
 
                 if (data.command === "WEBVIEW_READY") {
+                    console.log("An Craft sudah active nih..");
                     await this.action.readModels(webviewView);
-                    
+
                 }
                 if (data.command === "ABORT_REQUEST") {
                     if (this.currentAbortController) {
@@ -56,32 +57,41 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                             await this.action.getModels(data.data.provider, data.data.apikey, webviewView, this.modelService);
                             break;
                         }
-                        case "EXECUTE_STEP": {
-                            await this.action.executeStep(webviewView, data, signal);
-                            break;
-                        }
-                        case "EXECUTE_TASK": {
-                            await this.action.executeTask(webviewView, data, signal);
-                            break;
-                        }
                         case "TEXT": {
-                            await this.action.getPlanning(webviewView, data, signal);
+                            await this.action.buildTask(webviewView, data.data, signal);
                             break;
                         }
-                        case "EXECUTE_OPERATION": {
-                            await this.action.executeOperation(webviewView, data, signal);
+
+                        case "EXECUTE_TASK": {
+                            await this.action.executeTask(webviewView, "", data.task, data.message, signal);
                             break;
                         }
-                        case "EXECUTE_OPERATION_FAILED": {
-                            await this.action.resloveError(webviewView, data, signal);
+                        case "VALIDATE_TASK": {
+                            await this.action.buildTask(webviewView, data.message, signal, data?.history);
                             break;
                         }
+                        // case "EXECUTE_OPERATION": {
+                        //     await this.action.executeOperation(webviewView, data, signal);
+                        //     break;
+                        // }
+                        // case "EXECUTE_OPERATION_FAILED": {
+                        //     await this.action.resloveError(webviewView, data, signal);
+                        //     break;
+                        // }
                     }
                     //await this.sendMessage(webviewView, data);
                 }
-            } catch (err) {
-                this.receiveMessage.receiveError(webviewView, { ...data, data: { ...(data as any).data, status: "TODO" } })
+            } catch (err: any) {
+                const message = err?.message || err?.data?.message || "Internal server error";
+
+                vscode.window.showErrorMessage(message);
+
                 console.error("Error: ", err);
+                this.receiveMessage.receiveError(webviewView, {
+                    ...data,
+                    data: { ...(data as any)?.data, status: "TODO", message },
+                    message
+                });
             }
         })
     }

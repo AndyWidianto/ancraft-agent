@@ -1,14 +1,14 @@
-import { OutputPlan, OutputSubPlanning, Operation, OperationResult, AgentAI, SearchRelevantCode, StatusTask, StepType } from "./types";
-import { WorkspaceFileManager } from "./file_manager/workspace";
-import { buildPromtingPlanning } from "./prompt/planning";
-import { buildPromptSubPlanning } from "./prompt/subplanning";
-import { buildExecutePrompt } from "./prompt/executor";
-import { ExecuteTaskResult, FailedOperation, OperationError } from "./types/operation";
-import { buildErrorAnalysisPrompt, buildErrorRecoveryPrompt } from "./prompt/error";
-import ProjectContext from "./projectContext";
-import { buildSearchPrompt } from "./prompt/build";
-import { buildSetupProjectPrompt } from "./prompt/setup";
-import { buildJSONRepairPrompt } from "./prompt/buildjsonerror";
+import vscode from "vscode";
+import { Operation, OperationResult, AgentAI, SearchRelevantCode, BuildTask } from "../lib/types";
+import { WorkspaceFileManager } from "../lib/fileManager/workspace";
+import { buildExecutePrompt } from "../lib/prompt/executor";
+import { ExecuteTaskResult, FailedOperation, OperationError } from "../lib/types/operation";
+import { buildErrorAnalysisPrompt, buildErrorRecoveryPrompt } from "../lib/prompt/error";
+import ProjectContext from "../lib/projectContext";
+import { buildSearchPrompt } from "../lib/prompt/search";
+import { buildJSONRepairPrompt } from "../lib/prompt/buildjsonerror";
+import { buildTaskPrompt } from "../lib/prompt/buildtaskprompt";
+import { buildSetupProject } from "../lib/prompt/setup";
 
 const totalUsedToken = new Map<"inputTokenExecutor" | "outputTokenExecutor" | "inputTokenPlanning" | "outputTokenPlanning" | "inputTokenBuilder" | "outputTokenBuilder", number>();
 
@@ -35,45 +35,16 @@ export class Execute {
             error,
             relevantCode,
         });
-        console.log("Error handler: ", promptAnalisis);
         const responseAgent = await agent.sendMessage(promptAnalisis, model, 3, signal);
         const parseResponseAgent = await this.extractAndParseJSON(agent, model, responseAgent.text);
-
-        console.log(responseAgent.text);
 
         const totalInput = totalUsedToken.get("inputTokenExecutor") || 0;
         const totalOutput = totalUsedToken.get("outputTokenExecutor") || 0;
 
-        console.log("Total Ouput executor: ", responseAgent.totalTokens.output + totalOutput);
-        console.log("Total Input executor: ", responseAgent.totalTokens.input + totalInput);
         totalUsedToken.set("inputTokenExecutor", totalInput + responseAgent.totalTokens.input)
         totalUsedToken.set("outputTokenExecutor", totalOutput + responseAgent.totalTokens.output);
         return parseResponseAgent as ExecuteTaskResult;
     }
-
-    async setupProject(agent: AgentAI, model: string, task: string, techStack: any, operationHistory: string, projectContext: string, signal?: AbortSignal) {
-        const prompt = buildSetupProjectPrompt({
-            task,
-            operationHistory,
-            projectContext
-        })
-        console.log("setup project: ", prompt);
-        const response = await agent.sendMessage(prompt, model, 3, signal);
-        const parseResponseAgent = await this.extractAndParseJSON(agent, model, response.text);
-
-        console.log(response.text);
-
-        const totalInput = totalUsedToken.get("inputTokenExecutor") || 0;
-        const totalOutput = totalUsedToken.get("outputTokenExecutor") || 0;
-
-        console.log("Total Ouput executor: ", response.totalTokens.output + totalOutput);
-        console.log("Total Input executor: ", response.totalTokens.input + totalInput);
-        totalUsedToken.set("inputTokenExecutor", totalInput + response.totalTokens.input)
-        totalUsedToken.set("outputTokenExecutor", totalOutput + response.totalTokens.output);
-
-        return parseResponseAgent as ExecuteTaskResult;
-    }
-
 
     async analisisError(
         agent: AgentAI,
@@ -93,7 +64,6 @@ export class Execute {
             relevantCode,
             previousSearches: history.join('\n')
         })
-        console.log("Anailisis Error: ", prompt);
         const response = await agent.sendMessage(prompt, model, 3, signal);
         const parseResponseAgent = await this.extractAndParseJSON(agent, model, response.text);
 
@@ -102,88 +72,10 @@ export class Execute {
         const totalInput = totalUsedToken.get("inputTokenBuilder") || 0;
         const totalOutput = totalUsedToken.get("outputTokenBuilder") || 0;
 
-        console.log("Total Ouput context builder: ", response.totalTokens.output + totalOutput);
-        console.log("Total Input context builder: ", response.totalTokens.input + totalInput);
         totalUsedToken.set("inputTokenBuilder", totalInput + response.totalTokens.input)
         totalUsedToken.set("outputTokenBuilder", totalOutput + response.totalTokens.output);
 
         return parseResponseAgent as SearchRelevantCode;
-    }
-
-
-    // async getAnalisisTeckStack(agent: AgentAI, promptUser: string, model: string, signal?: AbortSignal) {
-    //     const promptAnalisis = buildPromptAnalysis(promptUser);
-    //     const responseAgent = await agent.sendMessage(promptAnalisis, model, 3, signal);
-
-
-    //     const totalInput = totalUsedToken.get("inputTokens") || 0;
-    //     const totalOutput = totalUsedToken.get("outputTokens") || 0;
-
-    //     console.log(responseAgent.text);
-    //     console.log("Total Ouput: ", responseAgent.totalTokens.output + totalOutput);
-    //     console.log("Total Input: ", responseAgent.totalTokens.input + totalInput);
-    //     totalUsedToken.set("inputTokens", totalInput + responseAgent.totalTokens.input)
-    //     totalUsedToken.set("outputTokens", totalOutput + responseAgent.totalTokens.output);
-
-    //     return responseAgent.text;
-    // }
-
-    async getPlanning(agent: AgentAI, model: string, text: string, projectContext: string, signal?: AbortSignal) {
-        // plannning
-        const prompt = buildPromtingPlanning(projectContext, text);
-        console.log("Planning: ", prompt);
-        const output = await agent.sendMessage(prompt, model, 3, signal);
-
-        console.log(output.text);
-
-        const totalInput = totalUsedToken.get("inputTokenPlanning") || 0;
-        const totalOutput = totalUsedToken.get("outputTokenPlanning") || 0;
-
-        console.log("Total Ouput planning: ", output.totalTokens.output + totalOutput);
-        console.log("Total Input planning: ", output.totalTokens.input + totalInput);
-        totalUsedToken.set("inputTokenPlanning", totalInput + output.totalTokens.input)
-        totalUsedToken.set("outputTokenPlanning", totalOutput + output.totalTokens.output);
-
-        const parseOutput: OutputPlan = await this.extractAndParseJSON(agent, model, output.text);
-        return parseOutput;
-    }
-
-    async getSubPlanning(
-        agent: AgentAI,
-        model: string,
-        projectContext: string,
-        goal: string,
-        currentStep: string,
-        type: StepType,
-        previousSteps?: string[],
-        nextSteps?: string[],
-        signal?: AbortSignal
-    ) {
-        const promptSubPlanning = buildPromptSubPlanning(
-            projectContext,
-            goal,
-            currentStep,
-            type,
-            (previousSteps ?? []).join('\n'),
-            nextSteps?.join('\n')
-        );
-
-        console.log("Sub planning: ", promptSubPlanning);
-
-        const responseAgent = await agent.sendMessage(promptSubPlanning, model, 3, signal);
-        const parseResponseAgent = await this.extractAndParseJSON(agent, model, responseAgent.text);
-
-        console.log(responseAgent.text);
-
-        const totalInput = totalUsedToken.get("inputTokenPlanning") || 0;
-        const totalOutput = totalUsedToken.get("outputTokenPlanning") || 0;
-
-        console.log("Total Ouput planning: ", responseAgent.totalTokens.output + totalOutput);
-        console.log("Total Input planning: ", responseAgent.totalTokens.input + totalInput);
-        totalUsedToken.set("inputTokenPlanning", totalInput + responseAgent.totalTokens.input)
-        totalUsedToken.set("outputTokenPlanning", totalOutput + responseAgent.totalTokens.output);
-
-        return parseResponseAgent as OutputSubPlanning;
     }
 
     async extractAndParseJSON<T = unknown>(
@@ -293,32 +185,48 @@ export class Execute {
         return parseResponseAgent as SearchRelevantCode;
     }
 
-    async Execute(
+    async setupProject(
         agent: AgentAI,
-        role: StepType,
         model: string,
         task: string,
         projectContext: string,
+        signal?: AbortSignal
+    ) {
+        const prompt = buildSetupProject(task, projectContext);
+
+        const response = await agent.sendMessage(prompt, model, 3, signal);
+        const parseResponseAgent = await this.extractAndParseJSON(agent, model, response.text);
+
+        console.log(response.text);
+        const totalInput = totalUsedToken.get("inputTokenExecutor") || 0;
+        const totalOutput = totalUsedToken.get("outputTokenExecutor") || 0;
+
+
+        totalUsedToken.set("inputTokenExecutor", totalInput + response.totalTokens.input)
+        totalUsedToken.set("outputTokenExecutor", totalOutput + response.totalTokens.output);
+
+        return parseResponseAgent as ExecuteTaskResult;
+    }
+
+    async Execute(
+        agent: AgentAI,
+        model: string,
+        task: string,
+        goal: string,
+        projectContext: string,
         relevantCode: string,
-        previousTasks?: string,
-        nextTasks?: string,
         operationHistory?: string,
         signal?: AbortSignal
     ) {
         const prompt = buildExecutePrompt({
-            role,
             task,
             projectContext,
             relevantCode,
-            previousTasks,
             operationHistory,
-            nextTasks
+            goal,
         })
 
-        console.log("Execute: ", prompt);
-
-        const response = await agent.sendMessage(prompt,
-            model, 3, signal);
+        const response = await agent.sendMessage(prompt, model, 3, signal);
         const parseResponseAgent = await this.extractAndParseJSON(agent, model, response.text);
 
         console.log(response.text);
@@ -326,74 +234,49 @@ export class Execute {
         const totalInput = totalUsedToken.get("inputTokenExecutor") || 0;
         const totalOutput = totalUsedToken.get("outputTokenExecutor") || 0;
 
-        console.log("Total Ouput executor: ", response.totalTokens.output + totalOutput);
-        console.log("Total Input executor: ", response.totalTokens.input + totalInput);
         totalUsedToken.set("inputTokenExecutor", totalInput + response.totalTokens.input)
         totalUsedToken.set("outputTokenExecutor", totalOutput + response.totalTokens.output);
 
         return parseResponseAgent as ExecuteTaskResult;
     }
 
+    async buildTask(
+        agent: AgentAI,
+        model: string,
+        projectContext: string,
+        { text, completedTasks, lastResult }: { text: string, completedTasks: string[], lastResult?: string },
+        signal?: AbortSignal
+    ) {
+        const prompt = buildTaskPrompt({
+            goal: text,
+            completedTasks,
+            lastResult,
+            projectContext
+        })
+        const response = await agent.sendMessage(prompt,
+            model, 3, signal);
+        const parseResponseAgent = await this.extractAndParseJSON(agent, model, response.text);
+
+        console.log(response.text);
+
+        const totalInput = totalUsedToken.get("inputTokenPlanning") || 0;
+        const totalOutput = totalUsedToken.get("outputTokenPlanning") || 0;
+
+        totalUsedToken.set("inputTokenPlanning", totalInput + response.totalTokens.input)
+        totalUsedToken.set("outputTokenPlanning", totalOutput + response.totalTokens.output);
+
+        return parseResponseAgent as BuildTask;
+    }
 
     async getProjectContext(needWorkspace: boolean, providedRoot?: string): Promise<string> {
         let contextOutput = "";
-        // `=========================================\n`;
-        // contextOutput += `PROJECT CONTEXT (ROOT: "${resolvedRoot}")\n`;
-        // contextOutput += `=========================================\n`;
-        // contextOutput += `Lockfiles: ${detectedLockfiles.length > 0 ? detectedLockfiles.join(', ') : 'None'}\n`;
-
-        // if (foundManifests.length === 0) {
-        //     contextOutput += `\n[No package manifest files found in root]\n`;
-        //     return contextOutput;
-        // }
-
-        // for (const manifest of foundManifests) {
-        //     const manifestPath = path.join(resolvedRoot, manifest);
-        //     try {
-        //         const content = fs.readFileSync(manifestPath, 'utf-8');
-
-        //         if (manifest.endsWith('.json')) {
-        //             const parsed = JSON.parse(content);
-        //             const sanitized = {
-        //                 name: parsed.name || path.basename(resolvedRoot),
-        //                 dependencies: parsed.dependencies || {},
-        //                 devDependencies: parsed.devDependencies || {},
-        //                 scripts: parsed.scripts || {},
-        //             };
-        //             contextOutput += `\n--- ${manifest} ---\n` + JSON.stringify(sanitized, null, 2) + '\n';
-        //         } else {
-        //             contextOutput += `\n--- ${manifest} ---\n${content.trim()}\n`;
-        //         }
-        //     } catch (err) {
-        //         contextOutput += `\n[Error reading ${manifest}: ${(err as Error).message}]\n`;
-        //     }
-        // }
-
         contextOutput += await this.projectContext.getProjectStructure("", providedRoot, needWorkspace);
 
         return contextOutput;
     }
 
-    formatPlanning(planning: OutputPlan): string {
-        const formatValue = (val: any): string => {
-            if (Array.isArray(val)) return val.join(', ');
-            if (typeof val === 'object' && val !== null) {
-                return Object.entries(val)
-                    .map(([k, v]) => `${k}: ${formatValue(v)}`)
-                    .join('; ');
-            }
-            return String(val);
-        };
-
-        const goalStr = Object.entries(planning.goal)
-            .map(([key, val]) => `${key}: ${val}`)
-            .join('\n');
-
-        const contextStr = Object.entries(planning.project_context)
-            .map(([key, val]) => `${key}: ${formatValue(val)}`)
-            .join('\n');
-
-        return `${goalStr}\n${contextStr}`;
+    async getWorkspaceTree() {
+        return this.projectContext.getWorkspaceTree();
     }
 
     private isForbiddenDatabaseCommand(command: string): boolean {
@@ -509,5 +392,36 @@ export class Execute {
         } catch (err) {
             console.error("Error: ", err);
         }
+    }
+
+totalTokens() {
+        const totalInputContextBuilder = totalUsedToken.get("inputTokenBuilder") ?? 0;
+        const totalOutputContextBuilder = totalUsedToken.get("outputTokenBuilder") ?? 0;
+        const totalInputExecutor = totalUsedToken.get("inputTokenExecutor") ?? 0;
+        const totalOutputExecutor = totalUsedToken.get("outputTokenExecutor") ?? 0;
+        const totalInputPlanning = totalUsedToken.get("inputTokenPlanning") ?? 0;
+        const totalOutputPlanning = totalUsedToken.get("outputTokenPlanning") ?? 0;
+
+        const grandTotalInput = totalInputContextBuilder + totalInputExecutor + totalInputPlanning;
+        const grandTotalOutput = totalOutputContextBuilder + totalOutputExecutor + totalOutputPlanning;
+        const grandTotal = grandTotalInput + grandTotalOutput;
+
+        // Membuat string pesan yang rapi untuk notifikasi VS Code
+        const message = `[Token Usage] ` +
+            `Builder (In: ${totalInputContextBuilder}, Out: ${totalOutputContextBuilder}) | ` +
+            `Executor (In: ${totalInputExecutor}, Out: ${totalOutputExecutor}) | ` +
+            `Planning (In: ${totalInputPlanning}, Out: ${totalOutputPlanning}) — ` +
+            `GRAND TOTAL: In ${grandTotalInput}, Out ${grandTotalOutput} (Sum: ${grandTotal})`;
+
+        // Menampilkan notifikasi pop-up di pojok kanan bawah VS Code
+        vscode.window.showInformationMessage(message);
+
+        // Jika Anda tetap ingin mencatatnya di console (opsional untuk debug)
+        console.log("=== TOKEN USAGE REPORT ===");
+        console.log(`Context Builder - Input: ${totalInputContextBuilder}, Output: ${totalOutputContextBuilder}`);
+        console.log(`Executor        - Input: ${totalInputExecutor}, Output: ${totalOutputExecutor}`);
+        console.log(`Planning        - Input: ${totalInputPlanning}, Output: ${totalOutputPlanning}`);
+        console.log(`------------------------------`);
+        console.log(`GRAND TOTAL     - Input: ${grandTotalInput}, Output: ${grandTotalOutput} (Total: ${grandTotal})`);
     }
 }

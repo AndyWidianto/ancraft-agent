@@ -1,6 +1,6 @@
 {
-  "name": "flyspeed",
-  "displayName": "Fly Speed",
+  "name": "ancraft",
+  "displayName": "AnCraft",
   "description": "",
   "version": "0.0.1",
   "publisher": "Fly",
@@ -18,7 +18,7 @@
       "secondarySidebar": [
         {
           "id": "chatSidebarContainer",
-          "title": "Fly Speed",
+          "title": "AnCraft",
           "icon": "media/logo.png"
         }
       ]
@@ -27,7 +27,7 @@
       "chatSidebarContainer": [
         {
           "id": "chatSidebarView",
-          "name": "Fly Speed",
+          "name": "AnCraft",
           "icon": "",
           "type": "webview"
         }

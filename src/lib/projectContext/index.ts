@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import DatabaseSql from '../../config';
 import EmbeddingService from '../embeddings';
-import { AgentAI, OperationResult, TaskHistory } from '../types';
+import { AgentAI, OperationResult, ResponseDocument, TaskHistory } from '../types';
 import { DocumentationResult } from '../types/documentation';
 
 export default class ProjectContext {
@@ -48,42 +48,58 @@ export default class ProjectContext {
         return context;
     }
 
-    async getSemanticSearch(agent: AgentAI, model: string, query: string, reason: string, database: DatabaseSql, path: string): Promise<string> {
+    async getWorkspaceTree() {
+        const files = await vscode.workspace.findFiles(
+            '**/*',
+            '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/out/**,**/.next/**,**/.nuxt/**,**/.output/**,**/.svelte-kit/**,**/target/**,**/vendor/**,**/bin/**,**/obj/**,**/.gradle/**,**/.mvn/**,**/__pycache/**,**/.pytest_cache/**,**/.venv/**,**/venv/**,**/.claude/**,**/.agents/**,**/.windsurf/**,**/.turbo/**,**/.cache/**}',
+            100
+        );
+
+        const fileList = files.map(f => vscode.workspace.asRelativePath(f)).join('\n');
+        let context = `\n${fileList}\n`;
+        return context;
+    }
+
+    async getSemanticSearch(agent: AgentAI, model: string, query: string, reason: string, database: DatabaseSql, path: string): Promise<ResponseDocument> {
         try {
+            let isNotfound = false;
+            let text = '';
             const embedQuery = await agent.embedding(query, model);
-            const searchResults = await database.searchEmbeddings(embedQuery, 5, path);
+            const searchResults = await database.searchEmbeddings(embedQuery, 10, path);
 
             console.log("Result semantic Search: ", searchResults);
 
-            const filteredResults = Array.isArray(searchResults)
-                ? searchResults.filter((res: any) => res._distance !== undefined && res._distance < 0.55)
-                : [];
+            const topResults = Array.isArray(searchResults) ? searchResults.slice(0, 5) : []
 
-            // const topResults = filteredResults.slice(0, 7);
-
-            const formattedResults = filteredResults.map((res: any, idx: number) => {
+            const formattedResults = topResults.map((res: any, idx: number) => {
                 const filePath = res.path || res.file_path || 'Unknown';
                 const distance = res._distance !== undefined ? res._distance.toFixed(3) : 'N/A';
 
                 return `[Result #${idx + 1}] File: ${filePath} (Distance: ${distance})\nContent:\n${res.content}`;
             }).join('\n\n---\n\n');
 
-            return `=== SEMANTIC SEARCH RESULTS ===\n` +
-                `Query: "${query}"\n` +
-                `Reason: ${reason}\n\n` +
-                `${formattedResults || 'No relevant vector match found.'}\n`;
+            return {
+                text: `=== SEMANTIC SEARCH RESULTS ===\n` +
+                    `Query: "${query}"\n` +
+                    `Reason: ${reason}\n\n` +
+                    `${formattedResults || 'No relevant vector match found.'}\n`,
+                isNotFound: topResults.length > 0 ? false : true
+            };
         } catch (err) {
             console.error(err);
-            return `[Error in SEMANTIC_SEARCH: ${(err as Error).message}]`;
+            throw err;
         }
     }
 
 
-    async getFileContent(agent: AgentAI, model: string, database: DatabaseSql, embedding: EmbeddingService, filePath: string, query: string, reason: string): Promise<string> {
+    async getFileContent(agent: AgentAI, model: string, database: DatabaseSql, embedding: EmbeddingService, filePath: string, query: string, reason: string): Promise<ResponseDocument> {
         try {
             const workspaceFolders = vscode.workspace.workspaceFolders;
             if (!workspaceFolders || workspaceFolders.length === 0) {
-                return `[Error reading file ${filePath}: No active workspace]`;
+                return {
+                    text: `[Error reading file ${filePath}: No active workspace]`,
+                    isNotFound: true
+                }
             }
 
             const fileUri = vscode.Uri.joinPath(workspaceFolders[0].uri, filePath);
@@ -96,7 +112,10 @@ export default class ProjectContext {
                 const content = Buffer.from(fileData).toString('utf-8');
 
                 if (!content.trim()) {
-                    return `=== FILE: ${filePath} ===\nReason: ${reason}\n\n[File is empty]\n`;
+                    return {
+                        text: `=== FILE: ${filePath} ===\nReason: ${reason}\n\n[File is empty]\n`,
+                        isNotFound: true
+                    }
                 }
 
                 const generatedEmbeddings = await embedding.embeddings(agent, model, content, normalizedPath);
@@ -136,21 +155,27 @@ export default class ProjectContext {
                 .map(item => JSON.stringify(item))
                 .join('\n\n');
 
-            return `=== FILE: ${filePath} ===\n` +
-                `Reason: ${reason}\n\n` +
-                `${formattedContent || '[No relevant file content found]'}\n`;
+            return {
+                text: `=== FILE: ${filePath} ===\n` +
+                    `Reason: ${reason}\n\n` +
+                    `${formattedContent || '[No relevant file content found]'}\n`,
+                isNotFound: false
+            };
 
         } catch (err) {
             console.error("Error File Content: ", err);
-            return `[Error reading file ${filePath}: ${(err as Error).message}]`;
+            throw err;
         }
     }
 
-    async getFullFileContent(filePath: string, reason: string): Promise<string> {
+    async getFullFileContent(filePath: string, reason: string): Promise<ResponseDocument> {
         try {
             const workspaceFolders = vscode.workspace.workspaceFolders;
             if (!workspaceFolders || workspaceFolders.length === 0) {
-                return `[Error reading file ${filePath}: No active workspace]`;
+                return {
+                    text: `[Error reading file ${filePath}: No active workspace]`,
+                    isNotFound: true
+                }
             }
 
             const fileUri = vscode.Uri.joinPath(workspaceFolders[0].uri, filePath);
@@ -159,21 +184,27 @@ export default class ProjectContext {
             const content = Buffer.from(fileData).toString('utf-8');
 
             if (!content.trim()) {
-                return `=== FILE CONTENT: ${filePath} ===\nReason:${reason}\n\n[File is empty]\n`;
+                return {
+                    text: `=== FILE CONTENT: ${filePath} ===\nReason:${reason}\n\n[File is empty]\n`,
+                    isNotFound: true
+                };
             }
 
 
-            return `=== FILE CONTENT: ${filePath} ===\n` +
-                `Reason: ${reason}\n\n` +
-                `${content}\n`;
+            return {
+                isNotFound: false,
+                text: `=== FILE CONTENT: ${filePath} ===\n` +
+                    `Reason: ${reason}\n\n` +
+                    `${content}\n`
+            };
 
         } catch (err) {
             console.error("Error File Content: ", err);
-            return `[Error reading file ${filePath}: ${(err as Error).message}]`;
+            throw err;
         }
     }
 
-    async getSymbolSearch(query: string, reason: string): Promise<string> {
+    async getSymbolSearch(query: string, reason: string): Promise<ResponseDocument> {
         try {
             const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
                 'vscode.executeWorkspaceSymbolProvider',
@@ -184,12 +215,15 @@ export default class ProjectContext {
                 `- ${sym.name} (${vscode.SymbolKind[sym.kind]}) in ${vscode.workspace.asRelativePath(sym.location.uri)} [Line ${sym.location.range.start.line + 1}]`
             ).join('\n');
 
-            return `=== SYMBOL SEARCH RESULTS ===\n` +
-                `Query: "${query}"\n` +
-                `Reason: ${reason}\n\n` +
-                `${formattedSymbols || 'No matching symbols found.'}\n`;
+            return {
+                text: `=== SYMBOL SEARCH RESULTS ===\n` +
+                    `Query: "${query}"\n` +
+                    `Reason: ${reason}\n\n` +
+                    `${formattedSymbols || 'No matching symbols found.'}\n`,
+                isNotFound: false
+            };
         } catch (err) {
-            return `[Error searching symbols: ${(err as Error).message}]`;
+            throw err;
         }
     }
 

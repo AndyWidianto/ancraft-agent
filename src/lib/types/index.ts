@@ -182,61 +182,7 @@ export interface AnalysisQuestion {
     options: string[];
 }
 
-/**
- * Informasi tech stack belum lengkap.
- */
-export interface AnalysisNeedInformation {
-    status: "NEED_INFORMATION";
-    tech_stack: AnalysisTechStack;
-    questions: AnalysisQuestion[];
-    setup_prompt: null;
-    refreshProjectContext: false;
-}
-
-/**
- * Tech stack sudah diketahui,
- * tetapi project belum tersedia / PROJECT_CONTEXT kosong.
- */
-export interface AnalysisSetupRequired {
-    status: "SETUP_REQUIRED";
-    tech_stack: AnalysisTechStack;
-    questions: [];
-    setup_prompt: string;
-    refreshProjectContext: true;
-}
-
-/**
- * Project dan tech stack sudah siap untuk planning.
- */
-export interface AnalysisReady {
-    status: "READY";
-    tech_stack: AnalysisTechStack;
-    questions: [];
-    setup_prompt: null;
-    refreshProjectContext: false;
-}
-
-export type AnalysisResult =
-    | AnalysisNeedInformation
-    | AnalysisSetupRequired
-    | AnalysisReady;
-
-
-export interface OutputSubPlanning {
-    step_title: string,
-    tasks: Task[]
-}
-
-export type StatusTask = "TODO" | "IN_PROGRESS" | "DONE" | "FAILED";
-
-
-export interface Task {
-    id: number;
-    title: string;
-    description: string;
-    depends_on: number[],
-    estimated_scope: "SMALL" | "MEDIUM";
-}
+export type StatusTask = "CONTINUE" | "DONE" | "BLOCKED";
 
 
 export interface NeedContext {
@@ -295,4 +241,23 @@ export interface SearchRelevantCode {
     status: "READY" | "NEED_CONTEXT",
     information_requests: InformationRequest[],
     query?: string;
+}
+
+
+export interface BuildTask {
+    id: string;
+    status: StatusTask,
+    task: string,
+    reason: string
+    type: "SETUP" | "EXECUTE";
+    history?: {
+        context: string[];
+        query: string[];
+    }
+}
+
+
+export interface ResponseDocument {
+    text: string;
+    isNotFound: boolean;
 }

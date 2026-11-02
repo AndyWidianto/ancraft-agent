@@ -1,26 +1,7 @@
-import type { AIModelData, OperationResult, StepType } from ".";
+import type { AIModelData, BuildTask, OperationResult, StepType } from ".";
 import type { Operation } from "./operation";
 
-export type TypeProvider = "GEMINI" | "OPENAI" | "ANTHROPIC";
-
-// Type untuk Action tipe "EXECUTE_STEP"
-export interface ExecuteStepData {
-  goal: string;
-  step: string;
-  stepId: number;
-  planningId: string;
-  type: StepType;
-  nextTasks?: string[];
-  previousTasks?: string[];
-}
-
-export interface ExecuteStepMessage {
-  command: "SEND_MESSAGE";
-  action: "EXECUTE_STEP";
-  data: ExecuteStepData;
-  history: OperationResult[];
-  meta: Meta
-}
+export type TypeProvider = "GEMINI" | "OPENAI" | "ANTHROPIC" | "DEEPSEEK";
 
 
 export interface UserMessage {
@@ -49,29 +30,21 @@ export interface Meta {
   };
 }
 
-// Type untuk Action tipe "EXECUTE_TASK"
-export interface ExecuteTaskData {
-  goal: string;
-  task: string;
-  stepId: number;
-  taskId: number;
-  planningId: string;
-  type: StepType;
-  nextTasks?: string[];
-  previousTasks?: string[];
-  result_search?: {
-    content: string[],
-    history_query: string[]
-  }
-}
-
 export interface ExecuteTaskMessage {
   command: "SEND_MESSAGE";
   action: "EXECUTE_TASK";
-  data: ExecuteTaskData;
-  history: OperationResult[];
+  message: UserMessage;
+  task: BuildTask;
+  history: string[];
   techStack: Record<string, any>;
   meta: Meta
+}
+
+export interface ValidateTaskMessage {
+  command: "SEND_MESSAGE";
+  action: "VALIDATE_TASK";
+  message: UserMessage;
+  history: string[];
 }
 
 export interface Provider {
@@ -117,6 +90,6 @@ export interface SelectModelRequest {
   data: { model: AIModelData, type: "EXECUTOR" | "EMBEDDING" | "PLANNER" }
 }
 // Discriminated Union untuk gabungan semua message yang dikirim
-export type BackgroundMessage = ExecuteStepMessage | ExecuteTaskMessage
+export type BackgroundMessage = ExecuteTaskMessage
   | TextMessage | ExecuteOperationMessage | Provider | Request |
-  ExecuteOperationFailedMessage | SelectModelRequest;
+  ExecuteOperationFailedMessage | SelectModelRequest | ValidateTaskMessage;

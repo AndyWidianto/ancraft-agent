@@ -347,20 +347,27 @@ export class WorkspaceFileManager {
             }
 
             const saved = await document.save();
-
+            const message = saved
+                ? `Berhasil memperbarui ${filePath}.`
+                : `Perubahan diterapkan tetapi gagal disimpan: ${filePath}.`
+            if (saved) {
+                vscode.window.showInformationMessage(message);
+            } else {
+                vscode.window.showErrorMessage(message);
+            }
             return {
                 success: saved,
-                message: saved
-                    ? `Berhasil memperbarui ${filePath}.`
-                    : `Perubahan diterapkan tetapi gagal disimpan: ${filePath}.`
+                message: message
             };
 
         } catch (error: unknown) {
+            const message =  error instanceof Error
+                    ? error.message
+                    : String(error);
+            vscode.window.showErrorMessage(message);
             return {
                 success: false,
-                message: error instanceof Error
-                    ? error.message
-                    : String(error)
+                message
             };
         }
     }

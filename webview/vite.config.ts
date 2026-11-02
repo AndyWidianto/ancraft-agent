@@ -9,7 +9,7 @@ export default defineConfig({
     tailwindcss()
   ],
   build: {
-    outDir: '../out/webview', 
+    outDir: '../out/webview',
     emptyOutDir: true,
     rollupOptions: {
       output: {
