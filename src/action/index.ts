@@ -856,4 +856,8 @@ export default class ActionService {
         return contexts;
     }
 
+    async removeFromFileIndex(uri: vscode.Uri) {
+        await this.database.deleteEmbeddingsByPath(uri.path);
+        return true;
+    }
 }

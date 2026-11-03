@@ -55,9 +55,53 @@ export async function activate(context: vscode.ExtensionContext) {
         receiveMessage
     );
 
-    // Daftarkan Webview Provider
+    const onSaveDisposable = vscode.workspace.onDidSaveTextDocument(async (document: vscode.TextDocument) => {
+        if (document.uri.scheme !== 'file' || document.fileName.includes('node_modules')) {
+            return;
+        }
+
+        const uri = document.uri
+        const filePath = uri.fsPath;
+
+        console.log(`File diubah & disimpan: ${filePath}`);
+        await actionService.emebddingFile(uri).catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+
+            vscode.window.showErrorMessage(`Gagal memproses embedding: ${message}`);
+
+            console.error('Embedding error:', err);
+        });
+    });
+
+    const onDeleteDisposable = vscode.workspace.onDidDeleteFiles(async (event) => {
+        for (const fileUri of event.files) {
+            await actionService.removeFromFileIndex(fileUri).catch((err: unknown) => {
+                const message = err instanceof Error ? err.message : String(err);
+
+                vscode.window.showErrorMessage(`Gagal memproses embedding: ${message}`);
+
+                console.error('Embedding error:', err);
+            });
+        }
+    });
+
+    const onRenameDisposable = vscode.workspace.onDidRenameFiles(async (event) => {
+        for (const file of event.files) {
+            await actionService.removeFromFileIndex(file.oldUri).catch((err: unknown) => {
+                const message = err instanceof Error ? err.message : String(err);
+
+                vscode.window.showErrorMessage(`Gagal memproses embedding: ${message}`);
+
+                console.error('Embedding error:', err);
+            });
+        }
+    });
+
     context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider("chatSidebarView", sidebarView)
+        vscode.window.registerWebviewViewProvider("chatSidebarView", sidebarView),
+        onDeleteDisposable,
+        onRenameDisposable,
+        onSaveDisposable
     );
 }
 
