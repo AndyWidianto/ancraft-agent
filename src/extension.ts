@@ -10,7 +10,6 @@ import ProjectContext from './lib/projectContext';
 import ReceiveMessage from './receiveMessage';
 import ActionService from './action';
 import { ModelService } from './model';
-import { GoogleAgent } from './agent/google';
 
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -29,7 +28,6 @@ export async function activate(context: vscode.ExtensionContext) {
         async () => {
             try {
                 await database.init(context);
-                await database.clearEmbeddingsTable();
             } catch (err) {
                 console.error("Gagal menginisialisasi database:", err);
             }

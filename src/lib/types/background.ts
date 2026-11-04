@@ -7,6 +7,7 @@ export type TypeProvider = "GEMINI" | "OPENAI" | "ANTHROPIC" | "DEEPSEEK";
 export interface UserMessage {
   text: string;
   model: string;
+  userSelection?: Record<string, any>,
 }
 export interface TextMessage {
   command: "SEND_MESSAGE";

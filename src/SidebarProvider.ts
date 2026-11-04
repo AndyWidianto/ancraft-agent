@@ -32,8 +32,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 if (data.command === "WEBVIEW_READY") {
                     console.log("An Craft sudah active....");
                     await this.action.readModels(webviewView);
-
                 }
+                
                 if (data.command === "ABORT_REQUEST") {
                     if (this.currentAbortController) {
                         this.currentAbortController.abort();

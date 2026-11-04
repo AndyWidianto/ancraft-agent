@@ -42,36 +42,6 @@ export interface TechStack {
 
 
 
-export interface OutputPlan {
-    goal: {
-        title: string;
-        description: string;
-    };
-    project_context: {
-        tech_stack: TechStack;
-        architecture: string;
-        design: {
-            style: string;
-            design_system: string;
-            responsive: boolean;
-            notes: string[];
-        };
-        coding_style: {
-            language: string;
-            conventions: string[];
-            patterns: string[];
-        };
-    };
-    steps: Step[];
-}
-
-export interface Planning extends OutputPlan {
-    status: StatusTask,
-    id: string;
-}
-
-
-
 export interface CreateOperation {
     type: "CREATE";
     path: string;
@@ -182,7 +152,7 @@ export interface AnalysisQuestion {
     options: string[];
 }
 
-export type StatusTask = "CONTINUE" | "DONE" | "BLOCKED";
+export type StatusTask = "CONTINUE" | "DONE" | "BLOCKED" | "NEED_INPUT";
 
 
 export interface NeedContext {
@@ -253,7 +223,11 @@ export interface BuildTask {
     history?: {
         context: string[];
         query: string[];
-    }
+    },
+    options: {
+        category: string,
+        choices: string[]
+    }[]
 }
 
 

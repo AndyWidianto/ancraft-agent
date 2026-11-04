@@ -144,6 +144,23 @@ RULES:
 `.trim();
 
 
+const TYPE_EXECUTOR = {
+  SETUP: `
+RULES:
+- Only initialize projects and install required dependencies.
+- Use framework and tooling specified in USER_GOAL.
+- **Strictly adhere to version constraints provided in DEPENDENCY_STABLE.**
+- Use stable, compatible versions and official tooling.
+- Do not generate application code, features, or configurations.
+- Do not install optional or unrelated packages.
+- Do not assume tools or dependencies are already installed.
+- Never run destructive commands or use sudo.
+- Stop after setup; implementation belongs to Executor.
+
+DEPENDENCY_STABLE: 
+prisma versi 7`,
+  EXECUTE: ``
+}
 export const buildExecutePrompt = ({
   goal,
   task,
@@ -151,12 +168,14 @@ export const buildExecutePrompt = ({
   projectContext,
   relevantCode,
   operationHistory,
+  type
 }: {
   goal: string;
   task: string;
   executionTask?: string;
   projectContext: unknown;
   relevantCode: unknown;
+  type: "SETUP" | "EXECUTE";
   operationHistory?: string;
 }): string => {
   const format = (value: unknown): string => {
@@ -180,11 +199,14 @@ export const buildExecutePrompt = ({
     return JSON.stringify(value);
   };
 
+  const typeExecutor = TYPE_EXECUTOR[type];
+
   return [
     EXECUTOR_BASE_PROMPT,
 
     `USER_GOAL:\n${goal}`,
     `CURRENT_TASK:\n${task}`,
+    typeExecutor,
 
     ...(executionTask?.trim()
       ? [`EXECUTION_TASK:\n${executionTask}`]

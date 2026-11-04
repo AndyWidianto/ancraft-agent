@@ -349,7 +349,6 @@ export default class ActionService {
         },
         retry = 3
     ) {
-        if (retry <= 0) throw new Error("Execute berhenti karena sudah melakukan refresh 3x.");
         if (!this.agentContextBuilder || !this.agentPlan || !this.agentIndexing || !this.agentExecutor) return;
 
         if (!projectContext.trim()) {
@@ -363,6 +362,8 @@ export default class ActionService {
         let isCompleted = false;
 
         try {
+            if (retry <= 0) throw new Error("Execute berhenti karena sudah melakukan refresh 3x.");
+            
             if (task.type === "SETUP") {
                 isCompleted = true;
             }
@@ -383,9 +384,11 @@ export default class ActionService {
                     const newRequests = context.information_requests || [];
 
                     const newContexts = await this.handleInformationRequest(
+                        webviewView,
                         { ...context, information_requests: newRequests },
                         this.database,
-                        this.embedding
+                        this.embedding,
+                        task.id
                     );
 
                     historyQuery.push(...newContexts.map(c => c.query));
@@ -405,27 +408,17 @@ export default class ActionService {
                 refresh += 1;
             }
 
-            let responseAgent: ExecuteTaskResult;
-
-            if (task.type != "SETUP") {
-                responseAgent = await this.execute.Execute(
+            let responseAgent = await this.execute.Execute(
                     this.agentExecutor.agent,
                     this.agentExecutor.model,
                     task.task,
                     message.text,
                     projectContext,
                     accumulatedContext.join('\n\n'),
+                    task.type,
                     "",
                     signal
-                );
-            } else {
-                responseAgent = await this.execute.setupProject(
-                    this.agentExecutor.agent,
-                    this.agentExecutor.model,
-                    task.task,
-                    projectContext
-                )
-            }
+                );;
 
             if (responseAgent.status === "READY") {
                 webviewView.webview.postMessage({
@@ -487,7 +480,8 @@ export default class ActionService {
                 text: message.text,
                 completedTasks,
                 lastResult,
-            })
+                userSelection: message.userSelection
+            }, signal)
             const taskId = uuid();
             webviewView.webview.postMessage({
                 command: "RECEIVE_MESSAGE",
@@ -532,7 +526,7 @@ export default class ActionService {
 
             if (!result.success && result.error) {
                 const projectContext = await this.execute.getProjectContext(true, "");
-                const isSuccessHandleError = await this.errorHandler(webviewView, task.task, projectContext, result.error, operation);
+                const isSuccessHandleError = await this.errorHandler(webviewView, task, projectContext, result.error, operation);
                 if (isSuccessHandleError) {
                     isSuccess = true;
                 }
@@ -625,40 +619,9 @@ export default class ActionService {
     //     }
     // }
 
-    async resloveError(webviewView: vscode.WebviewView, message: ExecuteOperationFailedMessage, signal?: AbortSignal) {
-        const item = message.data;
-        const operation = item.operation;
-
-
-        let isSuccess = false;
-
-        try {
-            let result = await this.execute.executeResult(operation);
-            isSuccess = result.success;
-
-            if (!result.success && result.error) {
-                console.error("Error", result);
-                const projectContext = await this.execute.getProjectContext(true, "");
-                const isSuccessHandleError = await this.errorHandler(webviewView, item?.task, projectContext, result.error, operation);
-                if (isSuccessHandleError) {
-                    isSuccess = true;
-                }
-            }
-
-            if (isSuccess) {
-                await this.updateEmbedding(operation);
-            }
-
-
-        } catch (error) {
-            console.error("[ExecuteOperation] Crash/Unhandled Error:", error);
-            throw error;
-        }
-    }
-
     async errorHandler(
         webviewView: vscode.WebviewView,
-        task: string,
+        task: BuildTask,
         projectContext: string,
         error: OperationError,
         operation: Operation,
@@ -694,9 +657,11 @@ export default class ActionService {
 
             if (responseAgent.status === "NEED_CONTEXT") {
                 const newContexts = await this.handleInformationRequest(
+                    webviewView,
                     responseAgent,
                     this.database,
-                    this.embedding
+                    this.embedding,
+                    task.id
                 );
 
                 newContexts.forEach((newContext) => {
@@ -713,7 +678,7 @@ export default class ActionService {
             refresh += 1;
         }
 
-        const errorHandler = await this.execute.errorHandler(this.agentExecutor.agent, this.agentExecutor.model, task, projectContext, contextFailed, error, accumulatedContext.join('\n\n'));
+        const errorHandler = await this.execute.errorHandler(this.agentExecutor.agent, this.agentExecutor.model, task.task, projectContext, contextFailed, error, accumulatedContext.join('\n\n'));
         if (errorHandler.status === "READY") {
             for (const op of errorHandler.operations) {
                 const execResult = await this.execute.executeResult(op);
@@ -787,11 +752,17 @@ export default class ActionService {
         }
     }
 
-    async handleInformationRequest(request: SearchRelevantCode, database: DatabaseSql, embedding: EmbeddingService) {
+    async handleInformationRequest(webviewView: vscode.WebviewView, request: SearchRelevantCode, database: DatabaseSql, embedding: EmbeddingService, taskId: string) {
         if (!this.agentIndexing) throw new Error("Indexing belum di setting nih.");
+
+
         const contexts: { text: string, type: string, query: string }[] = [];
 
         for (const infoReq of request.information_requests) {
+
+            const reqId = uuid();
+            this.receiveMessage.requestInformation(webviewView, taskId, reqId, infoReq, "IN_PROGRESS");
+
             switch (infoReq.type) {
                 case "PROJECT_STRUCTURE": {
                     const res = await this.projectContext.getProjectStructure(infoReq.reason, '.', true);
@@ -852,6 +823,7 @@ export default class ActionService {
                     break;
                 }
             }
+            this.receiveMessage.requestInformation(webviewView, taskId, reqId, infoReq, "IN_PROGRESS");
         }
         return contexts;
     }

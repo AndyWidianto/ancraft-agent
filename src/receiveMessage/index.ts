@@ -1,38 +1,8 @@
 import { WebviewView } from "vscode";
-import { AIModelData, Model, Operation, OperationResult, OutputPlan, Planning, StatusTask, Task, TypeProvider } from "../lib/types";
+import { AIModelData, InformationRequest, Operation, OperationResult, StatusTask } from "../lib/types";
+import { v4 as uuid } from "uuid";
 
 export default class ReceiveMessage {
-
-
-    receivePlanning(webviewView: WebviewView, planning: Planning) {
-        const dataPlanning = {
-            ...planning,
-            steps: planning.steps.map(step => ({ ...step, tasks: [], status: "TODO" as StatusTask }))
-        }
-        webviewView.webview.postMessage({
-            command: "RECEIVE_MESSAGE",
-            action: "PLANNING",
-            data: dataPlanning
-        })
-    }
-
-    receiveNewTask(
-        webviewView: WebviewView,
-        planningId: string,
-        stepId: number,
-        tasks: Task[]
-    ) {
-        const dataTask = {
-            tasks: tasks.map(task => ({ ...task, status: "TODO" as StatusTask })),
-            planningId,
-            stepId: stepId
-        }
-        webviewView.webview.postMessage({
-            command: "RECEIVE_MESSAGE",
-            action: "NEW_TASKS",
-            data: dataTask
-        })
-    }
 
     receiveNewHistory(
         webviewView: WebviewView,
@@ -42,28 +12,6 @@ export default class ReceiveMessage {
             command: "RECEIVE_MESSAGE",
             action: "NEW_HISTORY",
             data: operationResult
-        })
-    }
-
-
-    receiveUpdateStep(
-        webviewView: WebviewView,
-        planningId: string,
-        stepId: number,
-        status: StatusTask
-    ) {
-        if (!stepId) {
-            throw new Error("step id kosong mohon.");
-        }
-        const dataStep = {
-            planningId,
-            stepId,
-            status
-        }
-        webviewView.webview.postMessage({
-            command: "RECEIVE_MESSAGE",
-            action: "UPDATE_STEP",
-            data: dataStep
         })
     }
 
@@ -168,6 +116,25 @@ export default class ReceiveMessage {
             command: "RECEIVE_MESSAGE",
             action: "ERROR",
             data: data
+        })
+    }
+
+    requestInformation(
+        webviewView: WebviewView,
+        taskId: string,
+        id: string,
+        data: InformationRequest,
+        status: "DONE" | "IN_PROGRESS"
+    ) {
+        webviewView.webview.postMessage({
+            command: "RECEIVE_MESSAGE",
+            action: "REQUEST_INFORMATION",
+            data: {
+                id,
+                information: data,
+                status
+            },
+            taskId
         })
     }
 }

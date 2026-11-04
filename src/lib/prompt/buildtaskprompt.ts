@@ -3,62 +3,48 @@ export const buildTaskPrompt = ({
   projectContext,
   completedTasks = [],
   lastResult = '',
+  userSelection,
 }: {
   goal: string;
   projectContext: string;
   completedTasks?: string[];
   lastResult?: string;
-}): string => `
-You are an Autonomous Coding Task Planner.
+  userSelection?: Record<string, string>;
+}): string => {
+  const selectionText = userSelection
+    ? `\nUSER_SELECTION:\n${JSON.stringify(userSelection, null, 2)}`
+    : '';
 
-GOAL:
-Generate ONE next atomic task toward USER_GOAL.
-Never generate code, operations, or full plans.
+  return `
+You are an Autonomous Coding Task Planner.
+Generate ONE next task toward USER_GOAL. No code or full plans.
 
 RULES:
-- Follow USER_GOAL, PROJECT_CONTEXT, and existing architecture.
-- Use COMPLETED_TASKS and LAST_RESULT to determine progress.
-- Choose the smallest independently verifiable task.
-- Split large tasks; keep dependent changes together.
-- Respect dependencies and implementation order.
-- Specify complete outcomes, not commands or scaffolding.
-- Never invent project state or repeat completed work.
-- Address verified failures before continuing.
-- Preserve identifiers and use USER_GOAL language.
+- Follow USER_GOAL, PROJECT_CONTEXT, USER_SELECTION, and COMPLETED_TASKS/LAST_RESULT.
+- If the goal is broad/ambiguous and USER_SELECTION is empty, set type to NEEDS_INPUT and provide structured choices in "options".
+- Once choices are selected in USER_SELECTION or context, generate the smallest atomic task for "task".
+- Split tasks, respect dependencies, don't repeat completed work, fix failures first.
 
-VALIDATION:
-- After implementation, create a final validation task.
-- Verify requirements and integrations using existing tooling.
-- Fix verified failures, then revalidate affected changes.
-- Return DONE only when all requirements are validated.
-- Skip checks already covering the latest changes.
+TYPES: SETUP, EXECUTE, NEED_INPUT
+STATUSES: CONTINUE, DONE, BLOCKED
 
-TYPE:
-- SETUP: Project or tooling initialization.
-- EXECUTE: Implementation, fixes, or validation.
-
-STATUS:
-- CONTINUE: Work remains.
-- DONE: All requirements validated.
-- BLOCKED: Cannot safely determine the next task.
-
-USER_GOAL:
-${goal}
-
-PROJECT_CONTEXT:
-${projectContext}
-
-COMPLETED_TASKS:
-${JSON.stringify(completedTasks)}
-
-LAST_RESULT:
-${lastResult || 'None'}
+USER_GOAL: ${goal}
+PROJECT_CONTEXT: ${projectContext}${selectionText}
+COMPLETED_TASKS: ${JSON.stringify(completedTasks)}
+LAST_RESULT: ${lastResult || 'None'}
 
 OUTPUT JSON ONLY:
 {
   "status": "CONTINUE | DONE | BLOCKED",
   "task": "",
   "reason": "",
-  "type": "SETUP | EXECUTE"
+  "type": "SETUP | EXECUTE | NEED_INPUT",
+  "options": [
+    {
+      "category": "string",
+      "choices": ["string"]
+    }
+  ]
 }
 `.trim();
+};

@@ -4,11 +4,12 @@ import type {
   ActionType,
   ChatMessage,
   ExecuteTaskMessage,
+  InformationRequest,
   ModelState,
   Operation,
-  QuestionnaireData,
+  Option,
   Task,
-  TechStackData,
+  TypeTask,
   ValidateTaskMessage,
 } from './types';
 import AgentInput from './components/AgentInput';
@@ -33,7 +34,7 @@ export default function App() {
   const [autoApply, setAutoApply] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [questionnaireSelections, setQuestionnaireSelections] = useState<Record<string, string>>({});
+  const [inputSelections, setInputSelections] = useState<Record<string, string>>({});
   const [loadingExecuteTask, setLoadingExecuteTask] = useState(false);
 
   const [taskRightNow, setTaskRightNow] = useState<Task | null>(null);
@@ -73,16 +74,21 @@ export default function App() {
 
   const newTask = (data: Task) => {
     console.log(data);
-    setLoadingExecuteTask(true);
-    hasExecutedRef.current = false;
-    setTaskRightNow(data);
+
+    if (data.type !== "NEED_INPUT" && data.status === "CONTINUE") {
+      setLoadingExecuteTask(true);
+      hasExecutedRef.current = false;
+      setTaskRightNow(data);
+    }
     setMessages(prev => [...prev, {
       sender: "agent",
       id: data.id,
       text: data.task,
-      type: data.status,
+      status: data.status,
+      type: data.type,
       timestamp: new Date().toISOString(),
-      operations: data.operations ?? []
+      operations: data.operations ?? [],
+      options: data.options ?? [],
     }])
   }
 
@@ -93,13 +99,13 @@ export default function App() {
       setLoadingExecuteTask(false);
       setTaskRightNow(null);
     }
-    if (taskRightNow) {
-      setTaskRightNow(data)
+    if (data.status !== "DONE") {
+      setTaskRightNow(data);
     }
     setMessages(prev => prev.map(p => {
       if (p.id === data.id || p.id === taskId) {
         console.log("Data yang di update: ", p);
-        return { ...p, type: data.status }
+        return { ...p, status: data.status }
       }
       return p;
     }));
@@ -112,6 +118,18 @@ export default function App() {
   const newOperation = (taskId: string, data: Operation[]) => {
     setMessages(prev => prev.map(p => p.id === taskId ? ({ ...p, operations: data }) : p))
   }
+
+  const informationRequest = (taskId: string, data: InformationRequest) => {
+    setMessages(prev => prev.map(p => {
+      if (p.id === taskId) {
+        return {
+          ...p,
+          informationRequest: [...(p.informationRequest ?? []).filter(inf => inf.id !== data.id), data]
+        };
+      }
+      return p;
+    }));
+  };
 
   useEffect(() => {
     console.log("Messages: ", messages);
@@ -142,6 +160,7 @@ export default function App() {
             id: Date.now().toString(),
             sender: 'system',
             type: 'NEED_INFORMATION',
+            status: "CONTINUE",
             questionnaireData: data,
             timestamp: new Date().toISOString()
           }
@@ -170,6 +189,10 @@ export default function App() {
         setModel(prev => data ? data : prev);
       }
 
+      else if (action === "REQUEST_INFORMATION") {
+        informationRequest(message.taskId, data);
+      }
+
       else if (action === "ERROR") {
         setIsLoading(false);
         setIsTaskFailed(true);
@@ -195,11 +218,13 @@ export default function App() {
         id: Date.now().toString(),
         sender: 'user',
         text: userText,
+        status: "DONE",
         type: 'TEXT',
         timestamp: new Date().toISOString()
       }
     ]);
 
+    setHistoryTasks([]);
     setCacheValue(userText);
     setIsLoading(true);
 
@@ -212,39 +237,6 @@ export default function App() {
       meta: { ...model.planning, providerId: model.planning?.provider_id }
     });
     hasExecutedRef.current = true;
-  };
-
-  const handleQuestionnaireSubmit = (qData: QuestionnaireData, msgId: string) => {
-    const updatedTechStack: TechStackData = { ...qData.currentStack };
-
-    qData.questions.forEach((q) => {
-      const selectedOption = questionnaireSelections[q.key];
-      if (selectedOption) {
-        updatedTechStack[q.key] = [selectedOption];
-      }
-    });
-
-    setMessages((prev) => prev.filter((m) => m.id !== msgId));
-
-    setIsLoading(true);
-
-    const techStackString = Object.entries(updatedTechStack || {})
-      .map(([key, val]) => `${key} ${val}`)
-      .join(" ");
-
-    const text = [
-      cacheValue?.trim(),
-      techStackString ? `used ${techStackString}` : ""
-    ].filter(Boolean).join("\n");
-
-    vscode?.postMessage({
-      command: 'SEND_MESSAGE',
-      action: "TEXT",
-      data: {
-        text: text,
-        model: ""
-      }
-    });
   };
 
   const handleRetryTask = () => {
@@ -291,10 +283,12 @@ export default function App() {
   }
 
   // Badge Warna untuk aksi CUD
-  const getActionBadge = (type: ActionType) => {
+  const getActionBadge = (type: TypeTask) => {
     switch (type) {
       case 'NEED_INFORMATION':
         return <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-sky-500/20 text-sky-400 border border-sky-500/30">INFO NEEDED</span>;
+      case 'NEED_INPUT':
+        return <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">INPUT REQUIRED</span>;
       default:
         return null;
     }
@@ -338,6 +332,31 @@ export default function App() {
     }
   }, [isLoading, messages, historyTasks, taskRightNow]);
 
+  const handleInputOptionsSubmit = (options: Option[], msgId: string) => {
+    const selectedOptions: Record<string, string> = {};
+    options.forEach((opt) => {
+      if (inputSelections[opt.category]) {
+        selectedOptions[opt.category] = inputSelections[opt.category];
+      }
+    });
+
+    const validateTask: ValidateTaskMessage = {
+      command: "SEND_MESSAGE",
+      action: "VALIDATE_TASK",
+      message: {
+        text: cacheValue,
+        model: model.executor?.model_code || "",
+        userSelection: selectedOptions,
+      },
+      history: historyTasks.map((m) => m.task || ""),
+    };
+
+    vscode?.postMessage(validateTask);
+
+    setInputSelections({});
+    setMessages(message => message.filter(m => m.id !== msgId));
+  };
+
   return (
     <div className="flex flex-col h-screen text-xs select-none bg-[var(--vscode-sideBar-background)] text-[var(--vscode-sideBar-foreground)] font-sans">
       {/* Message List */}
@@ -347,14 +366,7 @@ export default function App() {
         className="flex-1 overflow-y-auto p-3 space-y-4">
         {messages.map((msg) => {
 
-          if (msg.type === 'NEED_INFORMATION' && msg.questionnaireData) {
-            const qData = msg.questionnaireData;
-
-            // Validasi apakah semua pertanyaan wajib (required) sudah diisi
-            const isAllSelected = qData.questions.every((q: any) =>
-              !q.required || questionnaireSelections[q.key]
-            );
-
+          if (msg.type === 'NEED_INPUT' && msg.options && msg.options.length > 0) {
             return (
               <div
                 key={msg.id}
@@ -365,41 +377,46 @@ export default function App() {
                     <svg className="w-4 h-4 fill-current" viewBox="0 0 16 16">
                       <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 13a6 6 0 1 1 0-12 6 6 0 0 1 0 12zm.75-9h-1.5v4.5h1.5V5zm0 5.5h-1.5v1.5h1.5V10.5z" />
                     </svg>
-                    <span>Informasi Tambahan Diperlukan</span>
+                    <span>Konfigurasi & Pilihan Sistem</span>
                   </div>
-                  {getActionBadge('NEED_INFORMATION')}
+                  {getActionBadge('NEED_INPUT')}
                 </div>
 
+                {/* Menampilkan teks pesan dari agent jika ada */}
+                {msg.text && (
+                  <div className="text-[11px] text-[var(--vscode-descriptionForeground)] whitespace-pre-wrap">
+                    {msg.text}
+                  </div>
+                )}
+
                 <div className="space-y-3">
-                  {qData.questions.map((q: any) => (
-                    <div key={q.key} className="flex flex-col gap-1.5">
+                  {msg.options && msg.options.length > 0 && msg.options.map((optCategory: Option, index: number) => (
+                    <div key={index} className="flex flex-col gap-1.5">
                       <div>
-                        <label className="capitalize text-[10px] font-semibold opacity-90 text-[var(--vscode-descriptionForeground)]">
-                          {q.title} {q.required && <span className="text-rose-400">*</span>}
+                        <label className="text-[10px] font-semibold uppercase tracking-wider text-[var(--vscode-descriptionForeground)] opacity-90">
+                          {optCategory.category} <span className="text-rose-400">*</span>
                         </label>
-                        {q.description && (
-                          <p className="text-[9px] opacity-60 leading-tight">{q.description}</p>
-                        )}
                       </div>
 
                       <div className="flex flex-wrap gap-1">
-                        {(q.options || []).map((option: any) => {
-                          const isSelected = questionnaireSelections[q.key] === option;
+                        {(optCategory.choices || []).map((choice: string) => {
+                          // Menggunakan state pemilihan, misal: inputSelections[optCategory.category]
+                          const isSelected = inputSelections[optCategory.category] === choice;
                           return (
                             <button
-                              key={option}
+                              key={choice}
                               onClick={() =>
-                                setQuestionnaireSelections((prev) => ({
+                                setInputSelections((prev) => ({
                                   ...prev,
-                                  [q.key]: option
+                                  [optCategory.category]: choice
                                 }))
                               }
-                              className={`px-2 py-1 rounded text-[10px] border transition-all ${isSelected
+                              className={`px-2.5 py-1 rounded text-[10px] border transition-all ${isSelected
                                 ? 'bg-[var(--vscode-button-background)] text-[var(--vscode-button-foreground)] border-transparent font-medium shadow-sm'
                                 : 'bg-[var(--vscode-input-background)] text-[var(--vscode-input-foreground)] border-[var(--vscode-input-border)] hover:border-[var(--vscode-focusBorder)]'
                                 }`}
                             >
-                              {option}
+                              {choice}
                             </button>
                           );
                         })}
@@ -409,11 +426,11 @@ export default function App() {
                 </div>
 
                 <button
-                  disabled={!isAllSelected}
-                  onClick={() => handleQuestionnaireSubmit(qData, msg.id)}
-                  className="w-full py-1.5 px-2 bg-[var(--vscode-button-background)] text-[var(--vscode-button-foreground)] rounded font-semibold hover:bg-[var(--vscode-button-hoverBackground)] disabled:opacity-30 disabled:cursor-not-allowed transition-all text-center"
+                  disabled={!msg.options.every((opt: Option) => inputSelections[opt.category])}
+                  onClick={() => handleInputOptionsSubmit(msg.options ?? [], msg.id)}
+                  className="w-full py-1.5 px-2 bg-[var(--vscode-button-background)] text-[var(--vscode-button-foreground)] rounded font-semibold hover:bg-[var(--vscode-button-hoverBackground)] disabled:opacity-30 disabled:cursor-not-allowed transition-all text-center text-xs"
                 >
-                  Konfirmasi & Lanjutkan
+                  Konfirmasi Pilihan & Lanjutkan
                 </button>
               </div>
             );
@@ -422,7 +439,7 @@ export default function App() {
           if (msg.sender === "agent") {
             return <AgentMessage message={msg} />
           }
-          
+
           return (
             <div key={msg.id} className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}>
               <div className={`max-w-[92%] p-2.5 rounded-lg ${msg.sender === 'user' ? 'bg-[var(--vscode-button-background)] text-[var(--vscode-button-foreground)]' : 'bg-[var(--vscode-editor-background)] border border-[var(--vscode-widget-border,rgba(255,255,255,0.08))]'}`}>

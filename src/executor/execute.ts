@@ -215,6 +215,7 @@ export class Execute {
         goal: string,
         projectContext: string,
         relevantCode: string,
+        type: "SETUP" | "EXECUTE",
         operationHistory?: string,
         signal?: AbortSignal
     ) {
@@ -224,6 +225,7 @@ export class Execute {
             relevantCode,
             operationHistory,
             goal,
+            type
         })
 
         const response = await agent.sendMessage(prompt, model, 3, signal);
@@ -245,14 +247,15 @@ export class Execute {
         agent: AgentAI,
         model: string,
         projectContext: string,
-        { text, completedTasks, lastResult }: { text: string, completedTasks: string[], lastResult?: string },
+        { text, completedTasks, lastResult, userSelection }: { text: string, completedTasks: string[], lastResult?: string, userSelection?: Record<string, any> },
         signal?: AbortSignal
     ) {
         const prompt = buildTaskPrompt({
             goal: text,
             completedTasks,
             lastResult,
-            projectContext
+            projectContext,
+            userSelection
         })
         const response = await agent.sendMessage(prompt,
             model, 3, signal);
