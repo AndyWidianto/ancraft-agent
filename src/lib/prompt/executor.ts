@@ -1,3 +1,4 @@
+import { basicRules } from "./basicrules";
 
 
 export const EXECUTOR_BASE_PROMPT = `
@@ -5,6 +6,8 @@ You are an AI Software Executor.
 
 GOAL:
 Complete CURRENT_TASK with minimal, correct operations.
+
+${basicRules}
 
 CONTEXT:
 - USER_GOAL: Overall objective, not permission to expand scope.

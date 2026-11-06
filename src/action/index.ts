@@ -93,6 +93,8 @@ export default class ActionService {
     }
 
     async readModels(webviewView: vscode.WebviewView) {
+        const symbol = await this.projectContext.getSymbolSearch("User", "");
+        console.log("Symbol nya min: ", symbol);
         const models = await this.database.getModels();
         this.receiveMessage.receiveModels(webviewView, models, "READ");
 
@@ -131,14 +133,6 @@ export default class ActionService {
                     agent: agent,
                     model: model?.model_code,
                 }
-
-                // const embed = await agent.embedding("User", model.model_code);
-                // const res = await this.projectContext.getFileContent(agent, model.model_code, this.database, this.embedding, 'prisma/schema.prisma', 'model', '');
-
-                // Ubah setiap item Proxy menjadi objek biasa menggunakan spread operator (...)
-                // const cleanRes = res.map(r => ({ ...r }));
-
-                // console.log("Search: ", res);
             }
         }
         if (modelExecut) {
@@ -182,7 +176,6 @@ export default class ActionService {
             }
         }
         if (modelContext) {
-            console.log("Context: ", { ...modelContext });
             const model = models.find(model => model.id === modelContext.model_id) ?? null;
             if (model) {
                 selected.context = model;
@@ -370,7 +363,7 @@ export default class ActionService {
 
             const workspaceTree = await this.projectContext.getWorkspaceTree();
 
-            while (!isCompleted && refresh <= 5) {
+            while (!isCompleted && refresh <= 3) {
                 const context = await this.execute.searchRelevantCode(
                     this.agentContextBuilder.agent,
                     this.agentContextBuilder.model,
@@ -521,7 +514,6 @@ export default class ActionService {
                 result = await this.execute.executeResult(operation);
             }
 
-            // Kirim hasil history
             this.receiveMessage.receiveNewHistory(webviewView, result.operationResult);
 
             if (!result.success && result.error) {
@@ -541,83 +533,6 @@ export default class ActionService {
             throw error;
         }
     }
-
-    // async executeOperation(webviewView: vscode.WebviewView, message: ExecuteOperationMessage, signal?: AbortSignal) {
-
-    //     const item = message.data;
-    //     const operation = item.operation;
-
-
-    //     const provider = await this.database.getProviderById(message.meta.providerId);
-    //     if (!provider || (provider && !provider.api_key)) {
-    //         throw new Error("Model tidak tersedia!.");
-    //     }
-
-    //     const agent = await this.connectedProvider({
-    //         provider: provider.provider as TypeProvider,
-    //         apikey: provider.api_key || ""
-    //     });
-
-
-    //     let isSuccess = false;
-
-    //     try {
-    //         let result = await this.execute.executeResult(operation);
-    //         isSuccess = result.success;
-
-    //         console.log("Response Operation: ", result);
-
-    //         if (!result.success) {
-    //             const fileUri = this.getFileUri(operation.type === "MODIFY" ? operation.path : operation.type === "CREATE" ? operation.path : "");
-    //             await this.emebddingFile(fileUri);
-    //             result = await this.execute.executeResult(operation);
-    //         }
-
-    //         // Kirim hasil history
-    //         this.receiveMessage.receiveNewHistory(webviewView, result.operationResult);
-
-    //         if (!result.success && result.error && operation.type === "COMMAND") {
-    //             console.error("Error", result);
-    //             const projectContext = await this.execute.getProjectContext(true, "");
-    //             const isSuccessHandleError = await this.errorHandler(webviewView, item?.task, projectContext, result.error, operation);
-    //             if (isSuccessHandleError) {
-    //                 isSuccess = true;
-    //             }
-    //         }
-
-    //         // Update embedding jika sukses
-    //         if (isSuccess) {
-    //             await this.updateEmbedding(operation);
-    //         }
-
-    //         const finalStatus: StatusTask = isSuccess ? "DONE" : "FAILED";
-
-    //         this.receiveMessage.receiveUpdateOperation(
-    //             webviewView,
-    //             message.data.planningId,
-    //             item.stepId,
-    //             item.taskId,
-    //             finalStatus,
-    //             operation.id,
-    //             operation,
-    //             result.error
-    //         );
-
-    //     } catch (error) {
-    //         console.error("[ExecuteOperation] Crash/Unhandled Error:", error);
-    //         this.receiveMessage.receiveUpdateOperation(
-    //             webviewView,
-    //             message.data.planningId,
-    //             item.stepId,
-    //             item.taskId,
-    //             "FAILED",
-    //             operation.id,
-    //             operation,
-    //             error,
-    //         );
-    //         throw error;
-    //     }
-    // }
 
     async errorHandler(
         webviewView: vscode.WebviewView,

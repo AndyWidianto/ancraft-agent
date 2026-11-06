@@ -1,4 +1,5 @@
 import { Operation, OperationError } from "../types";
+import { basicRules } from "./basicrules";
 import { OPERATION_PROMPT } from "./executor";
 
 export const buildErrorRecoveryPrompt = ({
@@ -83,6 +84,8 @@ export const buildErrorAnalysisPrompt = ({
 You are an Error Analysis Agent.
 Determine whether FAILED_OPERATION can be recovered.
 Never generate operations or invent code.
+
+${basicRules}
 
 RULES:
 - Analyze TASK, FAILED_OPERATION, ERROR, and available context.

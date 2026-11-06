@@ -1,3 +1,5 @@
+import { basicRules } from "./basicrules";
+
 export const buildTaskPrompt = ({
   goal,
   projectContext,
@@ -18,6 +20,8 @@ export const buildTaskPrompt = ({
   return `
 You are an Autonomous Coding Task Planner.
 Generate ONE next task toward USER_GOAL. No code or full plans.
+
+${basicRules}
 
 RULES:
 - Follow USER_GOAL, PROJECT_CONTEXT, USER_SELECTION, and COMPLETED_TASKS/LAST_RESULT.
